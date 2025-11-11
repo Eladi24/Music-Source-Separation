@@ -1,0 +1,26 @@
+# Model configuration
+model:
+  architecture: "unet"
+  n_fft: 2048
+  hop_length: 512
+  num_stems: 4  # vocals, drums, bass, other
+
+# Training
+training:
+  batch_size: 4
+  epochs: 50
+  learning_rate: 0.001
+  device: "cuda"  # or "cpu"
+
+# Data
+data:
+  sample_rate: 44100
+  segment_length: 6  # seconds
+  raw_dir: "data/raw"
+  stems_dir: "data/stems"
+  output_dir: "data/output"
+
+# Paths
+paths:
+  checkpoint_dir: "models/checkpoints"
+  log_dir: "logs"
