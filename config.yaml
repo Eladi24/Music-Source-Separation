@@ -1,26 +1,50 @@
-# Model configuration
-model:
-  architecture: "unet"
-  n_fft: 2048
-  hop_length: 512
-  num_stems: 4  # vocals, drums, bass, other
-
-# Training
-training:
-  batch_size: 4
-  epochs: 50
-  learning_rate: 0.001
-  device: "cuda"  # or "cpu"
-
-# Data
+# Data Configuration
 data:
-  sample_rate: 44100
-  segment_length: 6  # seconds
   raw_dir: "data/raw"
   stems_dir: "data/stems"
-  output_dir: "data/output"
+  processed_dir: "data/processed"
+  sample_rate: 44100
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  segment_length: 6.0  # seconds
+  stems:
+    - vocals
+    - drums
+    - bass
+    - other
 
-# Paths
-paths:
-  checkpoint_dir: "models/checkpoints"
+# Model Configuration
+model:
+  name: "UNet"
+  in_channels: 2  # stereo
+  out_channels: 2  # stereo per stem
+  num_stems: 4
+  base_channels: 32
+  depth: 6
+  kernel_size: 5
+
+# Training Configuration
+training:
+  batch_size: 4
+  num_epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  checkpoint_dir: "checkpoints"
   log_dir: "logs"
+  save_every: 5  # epochs
+  validate_every: 1  # epochs
+
+# Loss Configuration
+loss:
+  type: "l1"  # l1, l2, or multi_resolution_stft
+  weights:
+    spectral: 1.0
+    temporal: 0.1
+
+# Optimizer Configuration
+optimizer:
+  type: "adam"
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
