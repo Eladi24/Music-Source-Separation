@@ -7,10 +7,11 @@ Demucs models (see backend.py) -- nothing here is trained from scratch.
 """
 import queue
 import threading
+from pathlib import Path
 
 import gradio as gr
 
-from backend import DEFAULT_PRESET, MODEL_PRESETS, STEM_ORDER, separate
+from backend import DEFAULT_PRESET, MODEL_PRESETS, STEM_ORDER, separate, split_by_stereo_position
 
 # state -> (background color, text color, icon)
 _STATUS_STYLE = {
@@ -38,7 +39,8 @@ def run_separation(audio_path, preset, use_gpu):
     if audio_path is None:
         raise gr.Error("Upload or record a track first.")
 
-    skip_stems = (gr.skip(),) * len(STEM_ORDER)
+    # status, *stem_players, stems_state, stem_choice
+    skip_stems = (gr.skip(),) * (len(STEM_ORDER) + 2)
 
     yield (_status_html("running", "Starting"),) + skip_stems
 
@@ -84,7 +86,25 @@ def run_separation(audio_path, preset, use_gpu):
         else:
             stem_updates.append(gr.update(value=None, visible=False))
 
-    yield (_status_html("done", "Done"),) + tuple(stem_updates)
+    stems_as_str = {name: str(path) for name, path in result.stems.items()}
+    available = [name for name in STEM_ORDER if name in result.stems]
+    default_choice = "guitar" if "guitar" in available else available[0]
+    stem_choice_update = gr.update(choices=available, value=default_choice, interactive=True)
+
+    yield (_status_html("done", "Done"),) + tuple(stem_updates) + (stems_as_str, stem_choice_update)
+
+
+def run_position_split(stems, stem_name, strength):
+    if not stems or stem_name not in stems:
+        raise gr.Error("Run a separation first, then pick a stem to split.")
+    stem_path = stems[stem_name]
+    # Save alongside the stem it came from (output/<track name>/...) rather
+    # than loose in output/, matching how the main separation is organized.
+    result = split_by_stereo_position(stem_path, strength=strength, output_dir=str(Path(stem_path).parent))
+    return (
+        gr.update(value=str(result["left"]), visible=True, label=f"{stem_name.capitalize()} — left-leaning"),
+        gr.update(value=str(result["right"]), visible=True, label=f"{stem_name.capitalize()} — right-leaning"),
+    )
 
 
 with gr.Blocks(title="Stem Splitter") as demo:
@@ -115,18 +135,48 @@ with gr.Blocks(title="Stem Splitter") as demo:
                 for name in STEM_ORDER
             ]
 
-    run_btn.click(
-        fn=run_separation,
-        inputs=[audio_in, preset, use_gpu],
-        outputs=[status] + stem_players,
-    )
+    stems_state = gr.State(value={})  # stem name -> file path, from the last separation
 
     gr.Markdown(
         "---\n"
-        "**Note:** this separates by instrument *category* -- e.g. one combined "
-        '"guitar" stem, even if two guitars are playing. Splitting two simultaneous '
-        "performers of the *same* instrument isn't something any current pretrained "
-        "model can do reliably; see the Future Ideas section in README.md."
+        "**Note:** the stems above separate by instrument *category* -- e.g. one "
+        'combined "guitar" stem, even if two guitars are playing. Full source '
+        "identification for multiple performers of the *same* instrument isn't "
+        "something any current pretrained model can do reliably."
+    )
+
+    with gr.Accordion("🧪 Split a stem by stereo position (beta)", open=False):
+        gr.Markdown(
+            "Experimental, not true source separation. Splits a stem into a "
+            "left-leaning and right-leaning pair based purely on stereo panning "
+            "-- useful when two performances of the same instrument (e.g. "
+            "double-tracked guitars) were panned apart in the mix. **Does "
+            "nothing useful if the source is centered/mono** -- there's no "
+            "stereo cue to exploit in that case, and no algorithm can invent one."
+        )
+        with gr.Row():
+            split_stem_choice = gr.Dropdown(choices=[], label="Stem to split", interactive=False)
+            split_strength = gr.Slider(
+                minimum=0.0, maximum=0.6, value=0.3, step=0.05,
+                label="Separation strength",
+                info="0 = plain left/right channels (best for hard-panned sources). "
+                     "Higher also cancels shared/centered content (better for moderately-panned sources).",
+            )
+        split_btn = gr.Button("Split by position")
+        with gr.Row():
+            left_player = gr.Audio(label="Left-leaning", visible=False, interactive=False)
+            right_player = gr.Audio(label="Right-leaning", visible=False, interactive=False)
+
+        split_btn.click(
+            fn=run_position_split,
+            inputs=[stems_state, split_stem_choice, split_strength],
+            outputs=[left_player, right_player],
+        )
+
+    run_btn.click(
+        fn=run_separation,
+        inputs=[audio_in, preset, use_gpu],
+        outputs=[status] + stem_players + [stems_state, split_stem_choice],
     )
 
 if __name__ == "__main__":

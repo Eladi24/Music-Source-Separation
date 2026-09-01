@@ -29,8 +29,13 @@ The first time you run a separation, Demucs downloads the chosen model
 ```bash
 python3 -m venv ~/pytorch_env
 source ~/pytorch_env/bin/activate
-pip install -r requirements.txt
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install demucs gradio
 ```
+
+(CPU-only torch build -- smaller download, and GPU is optional/opt-in in
+the app anyway. `requirements.txt` lists the same packages if you'd rather
+`pip install -r requirements.txt` with the default GPU-enabled build.)
 
 ## Usage
 
@@ -46,18 +51,32 @@ GPU use is optional (there's a checkbox) and auto-falls-back to CPU if the
 GPU run fails or runs out of memory. CPU-only works fine, just slower --
 budget a few minutes per song.
 
-## Future ideas (not implemented)
+## Splitting multiple guitars (beta)
 
 **Separating multiple simultaneous performers of the *same* instrument**
 (e.g. two overlapping guitar parts into two separate tracks) was the
-original ask for this project, but there's currently no robust pretrained
-model for it. Stem separation models key off *timbral differences between
-instrument classes* (vocals vs. guitar vs. drums); two guitars in the same
-mix share timbre, register, and often rhythm, which is the hardest case in
-the field. What exists is narrow academic research (e.g. score-informed or
-MIDI-conditioned separation, or datasets like
-[GuitarDuets](https://arxiv.org/pdf/2507.01172)) that needs extra
-information (a score, a second modality) and doesn't generalize to an
-arbitrary uploaded song. Revisit this if/when that research matures into
-something that runs on unlabeled audio; for now the 6-stem mode's single
-combined "guitar" stem is the practical ceiling.
+original ask for this project. There's still no robust pretrained *model*
+for true source separation of this kind -- stem separation models key off
+*timbral differences between instrument classes*, and two guitars in the
+same mix share timbre, register, and often rhythm, which is the hardest
+case in the field. Narrow academic research exists (score-informed or
+MIDI-conditioned separation, datasets like
+[GuitarDuets](https://arxiv.org/pdf/2507.01172)) but needs information the
+GUI doesn't have and doesn't generalize to an arbitrary uploaded song.
+
+What *does* work, cheaply and without any model: a lot of dual-guitar mixes
+-- especially double-tracked guitars, the standard rock/metal production
+technique of recording the same part twice and panning the takes apart for
+width -- are distinguishable by stereo position even when nothing else
+distinguishes them. The **"Split a stem by stereo position (beta)"**
+section (after separating) uses that: pick a stem (usually guitar), and it
+splits it into a left-leaning and right-leaning pair. Validated on
+synthetic tests and a real track (details in `CLAUDE.md`) to give a real,
+measurable improvement when the source material is panned apart, and
+correctly no improvement when it's centered/mono -- that's a hard limit of
+using stereo position as the only cue, not a bug.
+
+Full source *identification* (knowing these are "guitar 1" and "guitar 2"
+regardless of mix position, or separating two centered sources) is still
+unsolved and would be a real research project. See `CLAUDE.md` for the
+state of that.
