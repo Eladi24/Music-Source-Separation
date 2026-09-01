@@ -8,20 +8,14 @@ env/
 venv/
 pytorch_env/
 
-# Jupyter
-.ipynb_checkpoints
+# Gradio
+gradio_cached_examples/
+flagged/
+*.webm
 
-# Data
-data/raw/*
-data/stems/*
-data/output/*
-!data/raw/.gitkeep
-!data/stems/.gitkeep
-!data/output/.gitkeep
-
-# Models
-models/checkpoints/*.pth
-!models/checkpoints/.gitkeep
+# Separated stems (regenerable output, not source)
+output/*
+!output/.gitkeep
 
 # IDE
 .vscode/

@@ -1,11 +1,4 @@
 torch
 torchaudio
-numpy
-librosa
-soundfile
-scipy
-matplotlib
-jupyter
-pyyaml
-tensorboard
-tqdm
+demucs
+gradio
