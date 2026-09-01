@@ -17,6 +17,9 @@ flagged/
 output/*
 !output/.gitkeep
 
+# Project notes (kept locally as persistent cross-session context, not in git)
+CLAUDE.md
+
 # IDE
 .vscode/
 .idea/
