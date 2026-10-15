@@ -572,6 +572,114 @@ for epoch in range(N_EPOCHS_RESUME):
     print(f"  saved {ckpt_path}")
 """
 
+RUN2_RESULT_MD = """\
+## Run 2 result (2026-10-15): lr=2e-4 worked (best_perm -17.7 -> -11.0dB), but
+## real-song listening found a real, specific problem -- not just noise
+
+The 2e-4 resume was stable (no divergence) and genuinely improved:
+`best_perm` -17.70 -> -11.03dB over 8 epochs, the best this investigation
+has produced. Still negative (0dB is roughly "no better than doing
+nothing"), so this is real progress off the floor, not a finished result.
+
+**Real-song test (The Sentinel, `tools/realsong_test_stereo.py`) on
+`htd_leadrhythm_lr2e4_epoch8.pt`:**
+
+```
+corr(out0, out1)              : +0.283
+Tipton-solo  window  out0/out1: 0.0255 / 0.1345   ratio 0.19
+Downing-solo window  out0/out1: 0.0222 / 0.1158   ratio 0.19
+```
+
+**The RMS-ratio metric was misleading -- confirmed by listening, not just
+suspected.** User's description: `out0` is "mostly the lead with a little
+bleed" during actual solos (correct, lead-dominant separation); `out1`
+during the same solos carries "both lead and rhythm guitars, much more
+bleed" (more total energy, not more correctly "the lead"). The 0.19 ratio
+reflects `out1`'s higher absolute level, not wrong routing -- the same
+trap this project hit with `corr` before it was retired as a quality
+indicator. Real, if partial, success: this is the first time in the
+HTDemucs line that real-audio lead isolation has been confirmed by ear.
+
+**The real, open problem: both outputs produce "buzzing and weird
+noises" specifically during NON-solo (pure rhythm) passages**, clearing
+up only when a solo is actually happening. Hypothesis: MoisesDB's 18
+training songs skew rock/pop/country/holiday -- nothing resembling
+metal's dense, high-gain, palm-muted rhythm chugging -- and the crop
+sampler's `overlap_bias=0.7` deliberately under-samples "pure rhythm, no
+solo" content relative to "something is soloing right now", compounding
+the gap for exactly the material this song's non-solo passages are made
+of. User chose to test this directly rather than just training longer.
+"""
+
+RESUME_V3_CODE = """\
+# --- Resume from epoch 8 of the lr=2e-4 run, same LR (that part is
+# already working -- don't change two variables at once), but with
+# overlap_bias lowered 0.7 -> 0.3 so training sees more "pure rhythm, no
+# solo" content -- directly testing the hypothesis that this is why both
+# outputs buzz on The Sentinel's non-solo passages. val_ds/test_ds kept
+# at the original bias (0.7) so the in-domain eval numbers stay
+# comparable across runs; only what the model TRAINS on changes.
+RESUME_EPOCH_V3 = "lr2e4_epoch8"
+LR_RESUME_V3 = 2e-4   # unchanged -- isolating the overlap_bias variable
+N_EPOCHS_V3 = 8
+CKPT_PREFIX_V3 = "htd_leadrhythm_ovl03"
+OVERLAP_BIAS_V3 = 0.3
+
+core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_{RESUME_EPOCH_V3}.pt",
+                                 map_location=DEVICE))
+print(f"loaded {RESUME_EPOCH_V3} weights")
+
+train_ds = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable, overlap_bias=OVERLAP_BIAS_V3)
+print(f"rebuilt train_ds with overlap_bias={OVERLAP_BIAS_V3} (was 0.7)")
+
+LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
+print(f"recalibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
+
+opt = torch.optim.Adam(model.parameters(), lr=LR_RESUME_V3)
+scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
+
+start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
+print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
+      f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
+
+DIVERGE_FLOOR_DB = -50.0
+DIVERGE_CHECK_EVERY = 20
+diverged = False
+
+for epoch in range(N_EPOCHS_V3):
+    for step in range(STEPS_PER_EPOCH):
+        mix, lead, rhythm = train_ds.sample_batch(BATCH)
+        mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
+        opt.zero_grad()
+        with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
+            out = model(mix)
+            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
+                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
+            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+
+        if step % DIVERGE_CHECK_EVERY == 0:
+            bp = best_perm.mean().item()
+            if not torch.isfinite(loss) or bp < DIVERGE_FLOOR_DB:
+                print(f"  DIVERGED at epoch {epoch+1} step {step}: best_perm(train batch)={bp:.1f}dB. Stopping early.")
+                diverged = True
+                break
+    if diverged:
+        break
+
+    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
+    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
+    print(f"ovl03-epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
+          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
+          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
+
+    ckpt_path = f"/kaggle/working/{CKPT_PREFIX_V3}_epoch{epoch+1}.pt"
+    torch.save(core.state_dict(), ckpt_path)
+    print(f"  saved {ckpt_path}")
+"""
+
 
 def build_cells():
     return [
@@ -589,6 +697,8 @@ def build_cells():
         cell(MD, NEXT_MD),
         cell(MD, RUN1_RESULT_MD),
         cell(CODE, RESUME_CODE),
+        cell(MD, RUN2_RESULT_MD),
+        cell(CODE, RESUME_V3_CODE),
     ]
 
 
