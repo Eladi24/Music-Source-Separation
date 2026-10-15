@@ -680,6 +680,98 @@ for epoch in range(N_EPOCHS_V3):
     print(f"  saved {ckpt_path}")
 """
 
+RUN3_RESULT_MD = """\
+## Run 3 result (2026-10-15): overlap_bias=0.3 made things worse, diverged by epoch 5
+
+The hypothesis (under-exposure to "pure rhythm, no solo" content causes
+the real-song buzzing) was tested by lowering `overlap_bias` 0.7 -> 0.3.
+Result: a real, consistent regression, not noise -- `test perm` never
+recovered the -8.86dB starting point (-17.88, -17.10, **-30.75**, -22.42
+across epochs 1-4), `role_acc` climbed while `best_perm` cratered (the
+same shortcut signature flagged in run 1), and training hit outright
+**NaN at epoch 5 step 140**. Conclusion: reducing overlap exposure
+doesn't just fail to help, it destabilizes training -- plausibly because
+crops where one source is near-silent give the loss less gradient signal
+(routing near-silence correctly is nearly free), so the model gets
+*less* useful training signal, not more of the right kind.
+
+**Reverting**: continuing from `htd_leadrhythm_lr2e4_epoch8.pt` (the last
+good checkpoint, -11.03dB / correct lead-dominant separation on real
+solos) at the ORIGINAL `overlap_bias=0.7` and the same `lr=2e-4` that was
+already working. None of the `ovl03_epoch{1-4}.pt` checkpoints are worth
+keeping. The non-solo buzzing problem is still open; if more epochs of
+the working recipe don't resolve it, genuinely more diverse training
+data (not reweighting the same 18 songs) is the more likely next lever.
+"""
+
+RESUME_V4_CODE = """\
+# --- Revert to the overlap_bias=0.7 lineage, continuing from
+# htd_leadrhythm_lr2e4_epoch8.pt (NOT epoch 14 -- that would discard the
+# whole lr=2e-4 run's progress). Rebuilds train_ds back to 0.7 in case
+# this is the same kernel session that just ran the failed 0.3 attempt.
+# New checkpoint prefix so this does NOT overwrite the existing
+# htd_leadrhythm_lr2e4_epoch{1..8}.pt files.
+RESUME_EPOCH_V4 = "lr2e4_epoch8"
+LR_RESUME_V4 = 2e-4   # unchanged -- this was working
+N_EPOCHS_V4 = 8
+CKPT_PREFIX_V4 = "htd_leadrhythm_lr2e4_cont"
+OVERLAP_BIAS_V4 = 0.7   # reverted from the failed 0.3 experiment
+
+core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_{RESUME_EPOCH_V4}.pt",
+                                 map_location=DEVICE))
+print(f"loaded {RESUME_EPOCH_V4} weights")
+
+train_ds = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable, overlap_bias=OVERLAP_BIAS_V4)
+print(f"train_ds overlap_bias={OVERLAP_BIAS_V4} (reverted from the failed 0.3 run)")
+
+LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
+print(f"recalibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
+
+opt = torch.optim.Adam(model.parameters(), lr=LR_RESUME_V4)
+scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
+
+start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
+print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
+      f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
+
+DIVERGE_FLOOR_DB = -50.0
+DIVERGE_CHECK_EVERY = 20
+diverged = False
+
+for epoch in range(N_EPOCHS_V4):
+    for step in range(STEPS_PER_EPOCH):
+        mix, lead, rhythm = train_ds.sample_batch(BATCH)
+        mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
+        opt.zero_grad()
+        with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
+            out = model(mix)
+            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
+                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
+            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+
+        if step % DIVERGE_CHECK_EVERY == 0:
+            bp = best_perm.mean().item()
+            if not torch.isfinite(loss) or bp < DIVERGE_FLOOR_DB:
+                print(f"  DIVERGED at epoch {epoch+1} step {step}: best_perm(train batch)={bp:.1f}dB. Stopping early.")
+                diverged = True
+                break
+    if diverged:
+        break
+
+    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
+    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
+    print(f"cont-epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
+          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
+          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
+
+    ckpt_path = f"/kaggle/working/{CKPT_PREFIX_V4}_epoch{epoch+1}.pt"
+    torch.save(core.state_dict(), ckpt_path)
+    print(f"  saved {ckpt_path}")
+"""
+
 
 def build_cells():
     return [
@@ -699,6 +791,8 @@ def build_cells():
         cell(CODE, RESUME_CODE),
         cell(MD, RUN2_RESULT_MD),
         cell(CODE, RESUME_V3_CODE),
+        cell(MD, RUN3_RESULT_MD),
+        cell(CODE, RESUME_V4_CODE),
     ]
 
 
