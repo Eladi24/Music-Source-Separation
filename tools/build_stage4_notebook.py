@@ -498,15 +498,25 @@ weak progress happened is preserved** -- watching specifically whether
 """
 
 RESUME_CODE = """\
-# --- Resume from epoch 14 (the best single checkpoint of run 1) at a 5x
-# higher LR. Fresh optimizer (same tradeoff accepted everywhere else in
-# this project's resume snippets -- Adam momentum from the stalled run
-# isn't worth preserving). LEAK_MARGIN recalibrated against THIS
-# checkpoint, same as Stage 3's Update 6 precedent, not reused from init.
+# --- Resume from epoch 14 (the best single checkpoint of run 1).
+# FIRST ATTEMPT at lr=5e-4 DIVERGED after 1 epoch: best_perm went from
+# -18.38dB to -71/-65dB -- a 5x LR jump took destabilizing steps through
+# the pretrained 42M-param backbone rather than just speeding up useful
+# learning. Answers part of the open question sharply: the stall isn't
+# simply "needs a bigger LR", that direction overshoots fast. This is a
+# much smaller, more careful bump (2x, not 5x) re-testing the same
+# question. epoch14's checkpoint itself was never touched by the failed
+# attempt (it only wrote htd_leadrhythm_lr5e4_epoch1.pt separately), so
+# this reloads the same clean starting point.
+#
+# Fresh optimizer (same tradeoff accepted everywhere else in this
+# project's resume snippets -- Adam momentum from the stalled run isn't
+# worth preserving). LEAK_MARGIN recalibrated against THIS checkpoint,
+# same as Stage 3's Update 6 precedent, not reused from init.
 RESUME_EPOCH = 14
-LR_RESUME = 5e-4
+LR_RESUME = 2e-4
 N_EPOCHS_RESUME = 8
-CKPT_PREFIX = "htd_leadrhythm_lr5e4"
+CKPT_PREFIX = "htd_leadrhythm_lr2e4"
 
 core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_epoch{RESUME_EPOCH}.pt",
                                  map_location=DEVICE))
@@ -522,6 +532,10 @@ start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
 print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
       f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
 
+DIVERGE_FLOOR_DB = -50.0  # run 1 and the failed 5e-4 attempt never went below -32dB when healthy
+DIVERGE_CHECK_EVERY = 20  # catch a bad LR within ~1/10 of an epoch, not after the full 200 steps
+diverged = False
+
 for epoch in range(N_EPOCHS_RESUME):
     for step in range(STEPS_PER_EPOCH):
         mix, lead, rhythm = train_ds.sample_batch(BATCH)
@@ -535,6 +549,17 @@ for epoch in range(N_EPOCHS_RESUME):
         scaler.scale(loss).backward()
         scaler.step(opt)
         scaler.update()
+
+        if step % DIVERGE_CHECK_EVERY == 0:
+            bp = best_perm.mean().item()
+            if not torch.isfinite(loss) or bp < DIVERGE_FLOOR_DB:
+                print(f"  DIVERGED at epoch {epoch+1} step {step}: best_perm(train batch)={bp:.1f}dB. "
+                      f"Stopping early -- {CKPT_PREFIX} checkpoints saved so far (if any) are from "
+                      f"before this; epoch {RESUME_EPOCH}'s own checkpoint is untouched.")
+                diverged = True
+                break
+    if diverged:
+        break
 
     val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
     test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
