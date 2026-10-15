@@ -460,6 +460,93 @@ NEXT_MD = """\
    its own isolated change, not bundled with anything else.
 """
 
+RUN1_RESULT_MD = """\
+## Run 1 result (2026-10-15): stalled at lr=1e-4 -- resuming at 5x LR
+
+15 epochs completed. **`best_perm` never moved**: best single value across
+the whole run was epoch 14 at -18.07dB, barely off init's -19.69dB, inside
+the noise band every other epoch bounced in (-18 to -26dB). `role_acc` on
+test drifted up (epochs 1-8 averaged ~0.66, epochs 9-15 averaged ~0.75) --
+real enough to not be pure noise, but with zero accompanying `best_perm`
+gain that looks like a weak partial shortcut, not genuine separation.
+`leak10` (lead leaking into the rhythm output) degraded mid-run (down to
+-17dB around epochs 10-12) and only partially recovered by the end.
+
+This is a harder warm start than every prior success in this project:
+every previous continuation (Stage 2->3, every Stage 3 update) resumed a
+backbone already trained on THIS task (separating a 2-guitar mixture).
+Here the HTDemucs backbone was trained on an unrelated task (full-song
+4-stem separation) and is seeing an input distribution (pure 2-guitar
+mixtures) it's never seen. `lr=1e-4` was copied from Stage 3's much
+smaller task-shift and may simply be too slow to move 42M pretrained
+params far enough in 3000 steps -- or the stall may be structural
+(resizing only the final layer isn't enough capacity to re-route). This
+cell tests which: **a single isolated change (5x higher LR), resuming
+from epoch 14 -- not from the original pretrained checkpoint, so whatever
+weak progress happened is preserved** -- watching specifically whether
+`best_perm` breaks out of the -18 to -26dB band.
+
+- If it climbs meaningfully -> this was a speed problem; keep going at
+  the higher LR.
+- If it stays pinned even at 5x LR -> real evidence this warm-start
+  strategy (fine-tune everything, resize only the last layer) can't
+  bridge this particular task gap -- the next move would be something
+  more structural (re-initializing more of the decoder) or accepting
+  this needs far more than 15-23 epochs (Stage 1's ConvTasNet run didn't
+  show its real breakthrough until epoch 30, though it started from a
+  much healthier quality level than this run is at).
+"""
+
+RESUME_CODE = """\
+# --- Resume from epoch 14 (the best single checkpoint of run 1) at a 5x
+# higher LR. Fresh optimizer (same tradeoff accepted everywhere else in
+# this project's resume snippets -- Adam momentum from the stalled run
+# isn't worth preserving). LEAK_MARGIN recalibrated against THIS
+# checkpoint, same as Stage 3's Update 6 precedent, not reused from init.
+RESUME_EPOCH = 14
+LR_RESUME = 5e-4
+N_EPOCHS_RESUME = 8
+CKPT_PREFIX = "htd_leadrhythm_lr5e4"
+
+core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_epoch{RESUME_EPOCH}.pt",
+                                 map_location=DEVICE))
+print(f"loaded epoch {RESUME_EPOCH} weights")
+
+LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
+print(f"recalibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
+
+opt = torch.optim.Adam(model.parameters(), lr=LR_RESUME)
+scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
+
+start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
+print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
+      f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
+
+for epoch in range(N_EPOCHS_RESUME):
+    for step in range(STEPS_PER_EPOCH):
+        mix, lead, rhythm = train_ds.sample_batch(BATCH)
+        mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
+        opt.zero_grad()
+        with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
+            out = model(mix)
+            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
+                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
+            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+
+    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
+    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
+    print(f"resume-epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
+          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
+          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
+
+    ckpt_path = f"/kaggle/working/{CKPT_PREFIX}_epoch{epoch+1}.pt"
+    torch.save(core.state_dict(), ckpt_path)
+    print(f"  saved {ckpt_path}")
+"""
+
 
 def build_cells():
     return [
@@ -475,6 +562,8 @@ def build_cells():
         cell(CODE, EVAL_CODE),
         cell(CODE, TRAIN_CODE),
         cell(MD, NEXT_MD),
+        cell(MD, RUN1_RESULT_MD),
+        cell(CODE, RESUME_CODE),
     ]
 
 
