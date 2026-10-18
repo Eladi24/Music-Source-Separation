@@ -121,11 +121,21 @@ silent outside them. The rhythm output is clean in non-solo passages but
 still lets the solos bleed through. There's also some buzzing, and its real
 guitar content came out too quiet because of a loss bug (see "DC" below).
 v3.1, warm-started from that checkpoint with the bug fixed and the loss
-rebalanced, improved on it by measurement at epoch 3. On "The Sentinel" the
-lead output is louder than the rhythm output during both solos for the
-first time, and the rhythm output is about 8dB fuller in non-solo passages.
-After that the rhythm output drifted into copying the input. v3.2 adds a
-loss term against that and warm-starts from v3.1 epoch 3.
+rebalanced, measured better at epoch 3: on "The Sentinel" the lead output
+is louder than the rhythm output during both solos, and the rhythm output
+is about 8dB fuller in non-solo passages. By ear, though, it sounds about
+the same as v3 epoch 5. After epoch 3 the rhythm output drifted into
+copying the input. v3.2 adds a loss term against that and warm-starts from
+v3.1 epoch 3.
+
+Two problems remain open:
+
+- **The lead bleeds into the rhythm track during solos.** v3.2 targets this.
+- **The solo gets swallowed when the solo passes from one guitarist to the
+  other, and during twin leads.** The likely cause is in the labels: each
+  MoisesDB track is labelled lead or rhythm as a whole, but about a quarter
+  of what's labelled "lead" is the lead guitarist playing rhythm. The
+  planned fix is labelling roles per 2-second window instead of per track.
 
 MoisesDB is licensed CC BY-NC-SA 4.0, so models trained on it are for
 non-commercial use only.
