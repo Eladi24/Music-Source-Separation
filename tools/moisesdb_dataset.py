@@ -22,11 +22,11 @@ import torch
 SR = 44100
 
 
-def rms_norm(x, target=0.1, floor=1e-6):
-    rms = np.sqrt(np.mean(x ** 2))
-    if rms < floor:
-        return x
-    return x * (target / rms)
+# v2 (2026-10-18): ONE gain per lead/rhythm pair, set from the mixture.
+# v1 normalised each source separately, which boosted a not-playing track's
+# hiss/hum by 40-90dB into a full-loudness target (see CLAUDE.md 2026-10-18).
+MIX_RMS = 0.1
+SILENT_MIX_RMS = 1e-3   # raw crops quieter than this (both guitars resting) are re-drawn
 
 
 def find_active_windows(path, win_sec=2.0, thresh=0.01):
@@ -75,30 +75,32 @@ class MoisesLeadRhythmDataset:
             start = random.randint(0, max_start)
         return start
 
+    def _read_crop(self, song, start, seg_n):
+        out = []
+        for key in ("lead_path", "rhythm_path"):
+            x, _ = sf.read(song[key], dtype="float32", always_2d=True, start=start, frames=seg_n)
+            if x.shape[0] < seg_n:
+                x = np.pad(x, ((0, seg_n - x.shape[0]), (0, 0)))
+            out.append(x)
+        return out
+
     def sample_batch(self, batch_size):
         seg_n = int(self.seg_sec * SR)
         leads, rhythms = [], []
         for _ in range(batch_size):
-            song = random.choice(self.songs)
-            start = self._sample_start(song)
-            lead, _ = sf.read(song["lead_path"], dtype="float32", always_2d=True,
-                               start=start, frames=seg_n)
-            rhythm, _ = sf.read(song["rhythm_path"], dtype="float32", always_2d=True,
-                                 start=start, frames=seg_n)
-            if lead.shape[0] < seg_n:
-                lead = np.pad(lead, ((0, seg_n - lead.shape[0]), (0, 0)))
-            if rhythm.shape[0] < seg_n:
-                rhythm = np.pad(rhythm, ((0, seg_n - rhythm.shape[0]), (0, 0)))
-            lead = rms_norm(lead)
-            rhythm = rms_norm(rhythm)
-            mix_peak = np.abs(lead + rhythm).max()
-            if mix_peak > 0.95:
-                scale = 0.95 / mix_peak
-                lead, rhythm = lead * scale, rhythm * scale
-            leads.append(lead.T)  # (C, T)
-            rhythms.append(rhythm.T)
+            for _try in range(20):
+                song = random.choice(self.songs)
+                lead, rhythm = self._read_crop(song, self._sample_start(song), seg_n)
+                mix_rms = np.sqrt(np.mean((lead + rhythm) ** 2))
+                if mix_rms >= SILENT_MIX_RMS:
+                    break
+            g = MIX_RMS / max(mix_rms, 1e-8)
+            peak = np.abs(lead + rhythm).max() * g
+            if peak > 0.95:
+                g *= 0.95 / peak
+            leads.append((lead * g).T)  # (C, T)
+            rhythms.append((rhythm * g).T)
 
-        lead_t = torch.from_numpy(np.stack(leads))
-        rhythm_t = torch.from_numpy(np.stack(rhythms))
-        mix_t = lead_t + rhythm_t
-        return mix_t, lead_t, rhythm_t
+        lead_t = torch.from_numpy(np.stack(leads)).float()
+        rhythm_t = torch.from_numpy(np.stack(rhythms)).float()
+        return lead_t + rhythm_t, lead_t, rhythm_t

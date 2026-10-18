@@ -98,26 +98,33 @@ non-overlapping sections don't teach the model anything about separating
 simultaneous content (they still contribute single-source reconstruction
 signal, which is why they're not excluded entirely).
 
+## v2 (2026-10-18): the silent-source fix
+
+v1 normalised each guitar track separately, which boosted the amp hiss in
+a not-playing track's "silent" stretch by 40-90dB and made it the
+target. 11% of source-crops were affected. That was very likely the cause
+of v1's non-solo buzzing, its negative best_perm, and its NaNs. v2 fixes
+the data (one joint gain per pair, so silence stays silent) and the loss
+(mixture-thresholded SNR, defined when a target is silent; hinge/leak only
+on both-active crops), and starts fresh from pretrained HTDemucs with
+warmup + cosine LR and gradient clipping. Training samples were
+listening-approved before this run, per the hard gate. See CLAUDE.md
+2026-10-18.
+
 ## What to watch
 
-- **`best-perm`** -- separation quality regardless of routing, same as
-  every prior stage. Init will be near 0dB or negative (random head) --
-  watch it climb like every previous warm start.
-- **`role-acc`** -- fraction where out0 is closer to lead than rhythm.
-  ~50% = not working.
-- **`leak(out0->rhythm)` / `leak(out1->lead)`** -- bleed, same mechanism
-  as Stage 3's leak-loss fix. Self-calibrated margin at init, same as
-  before.
-- Band-balance loss (the treble-starvation fix) is **deliberately not
-  included in this first run** -- this is already a compound change
-  (new architecture + new data), and adding a third lever at once would
-  make a bad result hard to diagnose. If this run succeeds, band-balance
-  is the natural next addition, and it may finally have real signal to
-  learn from (MoisesDB has real 2-4kHz content, unlike GuitarSet).
-- **Real-song test**: `tools/realsong_test.py` was built for the 16kHz
-  mono ConvTasNet and needs adapting for stereo/44.1kHz before it can
-  score this checkpoint -- not yet done, flagged as the next concrete
-  step once a checkpoint exists to test.
+- **`sep`** -- both-active separation, mixture-thresholded SNR (capped
+  ~30dB). New metric, **not comparable to v1's SI-SDR best_perm**.
+- **`role`** -- fraction of both-active crops where out0 is closer to the
+  lead than to the rhythm. ~50% = not working.
+- **`leak01` / `leak10`** -- SI-SDR of each output against the WRONG
+  source, both-active crops only. Lower is better.
+- **`buzz`** -- how loud an output is (dB vs the mix) when its own target
+  isn't playing. This measures v1's non-solo buzzing directly: it should
+  fall toward -30dB.
+- Band-balance loss stays off (one change at a time).
+- Real-song test: `tools/realsong_test_stereo.py`, locally, on downloaded
+  checkpoints.
 """
 
 SETUP_CODE = """\
@@ -140,7 +147,10 @@ SEG_SEC = 4.0
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 USE_DP = torch.cuda.device_count() > 1
 BATCH = 8 if USE_DP else 4   # conservative starting point -- this model is 8x the ConvTasNet's size
-N_EPOCHS = 15
+N_EPOCHS = 20
+LR_PEAK = 2e-4       # v1: 1e-4 stalled, 5e-4 diverged, 2e-4 progressed (flat 2e-4 later NaN'd -> schedule below)
+GRAD_CLIP = 5.0
+CKPT_PREFIX = "htd_v2"
 LAMBDA_HINGE = 3.0   # Stage 2/3 found this is where routing actually gets a real gradient
 LAMBDA_LEAK = 1.0    # conservative starting weight, same philosophy as every prior leak-loss run
 LAMBDA_BAND = 0.0    # deliberately off this run -- see markdown above
@@ -207,64 +217,127 @@ if USE_DP:
 """
 
 LOSS_CODE = """\
-# --- Loss: PIT-preserving reconstruction + bounded routing hinge + bounded
-# leakage penalty -- unchanged mechanism from Stage 2/3 (see CLAUDE.md), just
-# shaped for HTDemucs's (B, S=2, C=2, T) stereo output instead of the
-# ConvTasNet's mono (B, S, T). sisdr_elem only reduces over the last dim, so
-# it already broadcasts correctly over the extra channel dimension -- verified
-# locally before this notebook was written.
+# --- Loss (v2, 2026-10-18). v1 used per-channel SI-SDR for everything,
+# which breaks on real multitracks: when one guitar isn't playing, its target
+# is silence, and SI-SDR against silence is about -80dB whatever the model
+# outputs. It can't reward "be quiet" (it ignores level), and its gradient is
+# garbage there. That plausibly caused v1's buzzing, negative best_perm and
+# NaNs (see CLAUDE.md 2026-10-18).
+#
+# Reconstruction now uses the mixture-thresholded SNR from MixIT/FUSS
+# (Wisdom et al.), scored over BOTH channels jointly (some tracks are panned
+# hard, down to -19dB on one side):
+#     score = 10log10((|ref|^2 + tau|mix|^2) / (|est-ref|^2 + tau|mix|^2))
+# Active ref: ~ordinary SNR, capped ~30dB. Silent ref: 0dB when the output is
+# silent, toward -30dB as the output gets as loud as the mix. Bounded both
+# ways, defined everywhere, and level-aware -- fine because v2's data keeps the
+# true joint level (see dataset cell).
+#
+# The routing hinge and leak penalty stay SI-SDR (their Stage 3-proven form),
+# but are only computed on crops where BOTH sources are active -- the only
+# case where "out0 is closer to lead than to rhythm" means anything.
+TAU = 10 ** (-30 / 10)   # SNR cap 30dB below the mixture
+ACTIVE_DB = -20.0        # source quieter than this (vs the mix) counts as not playing
 
-def sisdr_elem(est, ref, eps=1e-8):
-    ref = ref - ref.mean(-1, keepdim=True)
-    est = est - est.mean(-1, keepdim=True)
-    a = (est * ref).sum(-1, keepdim=True) / ((ref ** 2).sum(-1, keepdim=True) + eps)
-    t = a * ref
-    return 10 * torch.log10((t ** 2).sum(-1) / (((est - t) ** 2).sum(-1) + eps) + eps)
+
+def _flat(x):
+    return x.float().reshape(x.shape[0], -1)   # (B, C*T), fp32 -- sums of squares overflow fp16
 
 
-def combined_loss(est, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_leak=0.0):
-    s00, s11 = sisdr_elem(est[:, 0], LEAD), sisdr_elem(est[:, 1], RHYTHM)
-    s01, s10 = sisdr_elem(est[:, 0], RHYTHM), sisdr_elem(est[:, 1], LEAD)
-    l_same = -(s00 + s11) / 2
-    l_swap = -(s01 + s10) / 2
-    pit_loss = torch.minimum(l_same, l_swap).mean()
-    hinge = F.relu(margin - (s00 - s01)).mean()
-    best_perm = torch.maximum(-l_same, -l_swap)
+def snr_mix(est, ref, mix):
+    e, r, m = _flat(est), _flat(ref), _flat(mix)
+    floor = TAU * (m ** 2).sum(-1)
+    return 10 * torch.log10(((r ** 2).sum(-1) + floor) / (((e - r) ** 2).sum(-1) + floor))
+
+
+def sisdr_flat(est, ref, eps=1e-8):
+    e, r = _flat(est), _flat(ref)
+    r = r - r.mean(-1, keepdim=True)
+    e = e - e.mean(-1, keepdim=True)
+    a = (e * r).sum(-1, keepdim=True) / ((r ** 2).sum(-1, keepdim=True) + eps)
+    t = a * r
+    q = 10 * torch.log10((t ** 2).sum(-1) / (((e - t) ** 2).sum(-1) + eps) + eps)
+    return q.clamp(-40.0, 40.0)   # beyond +-40dB is meaningless for routing, and unbounded otherwise
+
+
+def level_db(x, mix):
+    return 10 * torch.log10((_flat(x) ** 2).sum(-1) / ((_flat(mix) ** 2).sum(-1) + 1e-12) + 1e-12)
+
+
+def _mmean(x, mask):
+    return (x * mask).sum() / mask.sum().clamp(min=1.0)
+
+
+def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_leak=0.0):
+    o0, o1 = est[:, 0], est[:, 1]
+    s00, s11 = snr_mix(o0, LEAD, MIX), snr_mix(o1, RHYTHM, MIX)
+    s01, s10 = snr_mix(o0, RHYTHM, MIX), snr_mix(o1, LEAD, MIX)
+    l_same, l_swap = -(s00 + s11) / 2, -(s01 + s10) / 2
+
+    lead_on = level_db(LEAD, MIX) > ACTIVE_DB
+    rhy_on = level_db(RHYTHM, MIX) > ACTIVE_DB
+    both = (lead_on & rhy_on).float()
+    # PIT only where both sources play. Where only one plays, PIT would let the
+    # model swap slots for free (rhythm in out0 scores the same) and the hinge
+    # is masked, so nothing would enforce routing in non-solo passages. There
+    # the assignment is fixed (lead->out0, rhythm->out1). The score is bounded,
+    # so this doesn't recreate Stage 2's directed-loss collapse:
+    # correct (-15) < collapse-to-mixture (0) < wrong route (+15).
+    pit_loss = torch.where(both > 0, torch.minimum(l_same, l_swap), l_same).mean()
+
+    q00, q01 = sisdr_flat(o0, LEAD), sisdr_flat(o0, RHYTHM)
+    q10 = sisdr_flat(o1, LEAD)
+    hinge = _mmean(F.relu(margin - (q00 - q01)), both)
     if lambda_leak > 0 and leak_margin is not None:
-        leak = (F.relu(s01 - leak_margin).mean() + F.relu(s10 - leak_margin).mean()) / 2
+        leak = (_mmean(F.relu(q01 - leak_margin), both) + _mmean(F.relu(q10 - leak_margin), both)) / 2
     else:
         leak = torch.zeros((), device=est.device)
-    role_acc = (s00 > s01).float().mean()
-    return pit_loss, hinge, leak, best_perm, role_acc, s01.detach(), s10.detach()
+
+    m = {
+        "sep": _mmean(torch.maximum(-l_same, -l_swap).detach(), both),   # both-active separation, dB
+        "role": _mmean((q00 > q01).float(), both),
+        "leak01": _mmean(q01.detach(), both), "leak10": _mmean(q10.detach(), both),
+        # "buzz": how loud an output is when its own target isn't playing (dB vs the
+        # mix; lower is better, -30 is the floor the loss asks for). This is v1's
+        # non-solo-passage buzzing, measured directly.
+        "buzz_sum": (level_db(o0, MIX).detach().clamp(min=-60) * (~lead_on)).sum()
+                    + (level_db(o1, MIX).detach().clamp(min=-60) * (~rhy_on)).sum(),
+        "buzz_n": (~lead_on).sum() + (~rhy_on).sum(),
+        "n_both": both.sum(),
+    }
+    return pit_loss, hinge, leak, m
 
 
 def leak_baseline(model, dataset, n=20):
-    \"\"\"Self-calibrate LEAK_MARGIN from the model's own init leakage, same as
-    the original leak-loss experiment (margin = min(baseline s01, s10) - 2dB).\"\"\"
+    \"\"\"Self-calibrate LEAK_MARGIN from the model's own init leakage on
+    both-active crops (margin = min(baseline leak01, leak10) - 2dB).\"\"\"
     model.eval()
-    s01s, s10s = [], []
+    l01, l10, k = 0.0, 0.0, 0
     with torch.no_grad():
-        for _ in range(n):
+        while k < n:
             mix, lead, rhythm = dataset.sample_batch(1)
             mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
-            out = model(mix)
-            _, _, _, _, _, s01, s10 = combined_loss(out, lead, rhythm)
-            s01s.append(s01.mean().item())
-            s10s.append(s10.mean().item())
+            _, _, _, m = combined_loss(model(mix), mix, lead, rhythm)
+            if m["n_both"].item() > 0:
+                l01 += m["leak01"].item(); l10 += m["leak10"].item(); k += 1
     model.train()
-    baseline = min(sum(s01s) / n, sum(s10s) / n)
-    return baseline - 2.0
+    return min(l01 / n, l10 / n) - 2.0
 """
 
 DATASET_CODE = """\
-# --- Streaming dataset: real audio, on-the-fly random crops, biased toward
-# measured overlap windows (see markdown above). No synthetic DSP, no
-# precompute -- see tools/moisesdb_dataset.py (validated locally) for the
-# identical logic this is copied from.
-
-def rms_norm(x, target=0.1, floor=1e-6):
-    rms = np.sqrt(np.mean(x ** 2))
-    return x if rms < floor else x * (target / rms)
+# --- Streaming dataset (v2, 2026-10-18): real audio, on-the-fly random
+# crops, biased toward measured overlap windows. Same as tools/moisesdb_dataset.py.
+#
+# THE v1 BUG THIS FIXES: v1 RMS-normalised each source SEPARATELY to 0.1 and
+# only skipped it below RMS 1e-6. Real tracks' "silent" stretches hold amp
+# hiss/hum/bleed at ~1e-4..1e-3, which got boosted 40-90dB to full loudness and
+# used as the target -- 11% of source-crops >30dB boosted at overlap_bias=0.7,
+# 18% at 0.3. v2 applies ONE gain to the pair (from the mixture), so a silent
+# source stays silent and the model learns to output silence for it. Natural
+# lead/rhythm levels in overlap regions already span about +-6dB around
+# balanced (measured), so there is no loudness shortcut to remove.
+MIX_RMS = 0.1
+SILENT_MIX_RMS = 1e-3   # raw crops quieter than this (both guitars resting) are re-drawn
 
 
 def find_active_windows(path, win_sec=2.0):
@@ -308,25 +381,31 @@ class MoisesLeadRhythmDataset:
             start = random.randint(0, max_start)
         return start
 
+    def _read_crop(self, song, start, seg_n):
+        out = []
+        for key in ("lead_path", "rhythm_path"):
+            x, _ = sf.read(song[key], dtype="float32", always_2d=True, start=start, frames=seg_n)
+            if x.shape[0] < seg_n:
+                x = np.pad(x, ((0, seg_n - x.shape[0]), (0, 0)))
+            out.append(x)
+        return out
+
     def sample_batch(self, batch_size):
         seg_n = int(self.seg_sec * SR)
         leads, rhythms = [], []
         for _ in range(batch_size):
-            song = random.choice(self.songs)
-            start = self._sample_start(song)
-            lead, _ = sf.read(song["lead_path"], dtype="float32", always_2d=True, start=start, frames=seg_n)
-            rhythm, _ = sf.read(song["rhythm_path"], dtype="float32", always_2d=True, start=start, frames=seg_n)
-            if lead.shape[0] < seg_n:
-                lead = np.pad(lead, ((0, seg_n - lead.shape[0]), (0, 0)))
-            if rhythm.shape[0] < seg_n:
-                rhythm = np.pad(rhythm, ((0, seg_n - rhythm.shape[0]), (0, 0)))
-            lead, rhythm = rms_norm(lead), rms_norm(rhythm)
-            peak = np.abs(lead + rhythm).max()
+            for _try in range(20):
+                song = random.choice(self.songs)
+                lead, rhythm = self._read_crop(song, self._sample_start(song), seg_n)
+                mix_rms = np.sqrt(np.mean((lead + rhythm) ** 2))
+                if mix_rms >= SILENT_MIX_RMS:
+                    break
+            g = MIX_RMS / max(mix_rms, 1e-8)       # one gain for the pair
+            peak = np.abs(lead + rhythm).max() * g
             if peak > 0.95:
-                scale = 0.95 / peak
-                lead, rhythm = lead * scale, rhythm * scale
-            leads.append(lead.T)
-            rhythms.append(rhythm.T)
+                g *= 0.95 / peak
+            leads.append((lead * g).T)
+            rhythms.append((rhythm * g).T)
         lead_t = torch.from_numpy(np.stack(leads)).float()
         rhythm_t = torch.from_numpy(np.stack(rhythms)).float()
         return lead_t + rhythm_t, lead_t, rhythm_t
@@ -357,12 +436,13 @@ test_ds = MoisesLeadRhythmDataset(DATA_DIR, test_ids, usable)
 
 SMOKETEST_CODE = """\
 # --- Smoke test: 3 batches with memory monitoring BEFORE committing to a
-# real run. Standing discipline since the Stage 0 OOM lesson (hid_chan
-# left at Asteroid's default blew memory, caught only by this kind of test).
+# real run (standing discipline since Stage 0's OOM). With AMP, the first 3-4
+# steps are usually skipped while GradScaler calibrates, so identical-looking
+# loss values here are expected (Stage 3 Update 5), not a dead optimizer.
 LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
 print(f"self-calibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
 
-opt = torch.optim.Adam(model.parameters(), lr=1e-4)
+opt = torch.optim.Adam(model.parameters(), lr=LR_PEAK)
 scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
 
 for i in range(3):
@@ -371,74 +451,108 @@ for i in range(3):
     opt.zero_grad()
     with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
         out = model(mix)
-        pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
-            out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
-        loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
+    pit, hinge, leak, m = combined_loss(out, mix, lead, rhythm,
+                                        leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
+    loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
     scaler.scale(loss).backward()
+    scaler.unscale_(opt)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
     scaler.step(opt)
     scaler.update()
-    if DEVICE == "cuda":
-        print(f"  batch {i}: loss={loss.item():.3f} best_perm={best_perm.mean().item():.2f}dB "
-              f"role_acc={role_acc.item():.2f}  gpu_mem={torch.cuda.max_memory_allocated()/1e9:.2f}GB")
-    else:
-        print(f"  batch {i}: loss={loss.item():.3f} best_perm={best_perm.mean().item():.2f}dB role_acc={role_acc.item():.2f}")
+    mem = f"  gpu_mem={torch.cuda.max_memory_allocated()/1e9:.2f}GB" if DEVICE == "cuda" else ""
+    print(f"  batch {i}: loss={loss.item():.3f} pit={pit.item():.2f} hinge={hinge.item():.2f} "
+          f"both-active={int(m['n_both'].item())}/{BATCH}{mem}")
 
-print("\\nSmoke test passed -- note the GPU memory above and adjust BATCH upward if there's headroom "
-      "(it's a conservative starting guess) before running the full loop below.")
+print("\\nSmoke test passed -- note the GPU memory above and adjust BATCH upward if there's headroom.")
 """
 
 EVAL_CODE = """\
 def evaluate(dataset, n_batches=10, batch_size=BATCH):
+    \"\"\"Returns sep / role / leak01 / leak10 over both-active crops, and buzz
+    (mean output level vs the mix when that output's target is silent).\"\"\"
     model.eval()
-    tot_perm, tot_role, tot_leak01, tot_leak10, n = 0.0, 0.0, 0.0, 0.0, 0
+    acc = {"sep": 0.0, "role": 0.0, "leak01": 0.0, "leak10": 0.0}
+    w, buzz_sum, buzz_n = 0.0, 0.0, 0
     with torch.no_grad():
         for _ in range(n_batches):
             mix, lead, rhythm = dataset.sample_batch(batch_size)
             mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
-            out = model(mix)
-            _, _, _, best_perm, role_acc, s01, s10 = combined_loss(
-                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
-            tot_perm += best_perm.mean().item()
-            tot_role += role_acc.item()
-            tot_leak01 += s01.mean().item()
-            tot_leak10 += s10.mean().item()
-            n += 1
+            _, _, _, m = combined_loss(model(mix), mix, lead, rhythm)
+            nb = m["n_both"].item()
+            for k in acc:
+                acc[k] += m[k].item() * nb
+            w += nb
+            buzz_sum += m["buzz_sum"].item()
+            buzz_n += int(m["buzz_n"].item())
     model.train()
-    return tot_perm / n, tot_role / n, tot_leak01 / n, tot_leak10 / n
+    res = {k: v / max(w, 1) for k, v in acc.items()}
+    res["buzz"] = buzz_sum / buzz_n if buzz_n else float("nan")
+    res["buzz_n"] = buzz_n
+    return res
+
+
+def fmt(r):
+    return (f"sep={r['sep']:6.2f}dB role={r['role']:.2f} leak01={r['leak01']:6.1f} "
+            f"leak10={r['leak10']:6.1f} buzz={r['buzz']:6.1f}dB(n={r['buzz_n']})")
 """
 
 TRAIN_CODE = """\
-# --- Main training loop. Checkpoint saved every epoch (lesson from Stage 2's
-# save-on-"new best"-only bug, which silently skipped the actual best epoch).
+# --- Main training loop (v2). Fresh start from pretrained HTDemucs -- NOT
+# from v1's checkpoints, which learned the boosted-noise targets.
+# Stability, after v1 hit NaN twice at a flat lr=2e-4 around epoch 5-8:
+# linear warmup over the first epoch, cosine decay to 5% of peak, and
+# gradient-norm clipping. The divergence guard is kept, but only checks for
+# non-finite loss now -- the v1 floor on best_perm doesn't apply to the new score.
+import math
+
 STEPS_PER_EPOCH = 200
+TOTAL_STEPS = N_EPOCHS * STEPS_PER_EPOCH
+WARMUP_STEPS = STEPS_PER_EPOCH
+
+
+def lr_at(step):
+    if step < WARMUP_STEPS:
+        return LR_PEAK * (0.1 + 0.9 * step / WARMUP_STEPS)
+    p = (step - WARMUP_STEPS) / max(1, TOTAL_STEPS - WARMUP_STEPS)
+    return LR_PEAK * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * p)))
+
+
 os.makedirs("/kaggle/working", exist_ok=True)
+print("INIT  test", fmt(evaluate(test_ds)))
+print("(sep is the new mixture-thresholded SNR on both-active crops -- NOT comparable to v1's "
+      "SI-SDR best_perm. buzz: lower is better, -30dB is the floor the loss asks for.)")
 
-init_perm, init_role, init_l01, init_l10 = evaluate(test_ds, n_batches=10)
-print(f"INIT  test best_perm={init_perm:.2f}dB role_acc={init_role:.2f} "
-      f"leak(out0->rhythm)={init_l01:.1f}dB leak(out1->lead)={init_l10:.1f}dB")
-print("(best_perm near 0dB or negative is EXPECTED at init -- the output head is random)")
-
+global_step, diverged = 0, False
 for epoch in range(N_EPOCHS):
     for step in range(STEPS_PER_EPOCH):
+        for gparam in opt.param_groups:
+            gparam["lr"] = lr_at(global_step)
         mix, lead, rhythm = train_ds.sample_batch(BATCH)
         mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
         opt.zero_grad()
         with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
             out = model(mix)
-            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
-                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
-            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
+        pit, hinge, leak, _ = combined_loss(out, mix, lead, rhythm,
+                                            leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
+        loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
+        if not torch.isfinite(loss):
+            print(f"  NON-FINITE LOSS at epoch {epoch+1} step {step} -- stopping; "
+                  f"checkpoints up to epoch {epoch} are intact.")
+            diverged = True
+            break
         scaler.scale(loss).backward()
+        scaler.unscale_(opt)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         scaler.step(opt)
         scaler.update()
+        global_step += 1
+    if diverged:
+        break
 
-    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
-    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
-    print(f"epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
-          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
-          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
-
-    ckpt_path = f"/kaggle/working/htd_leadrhythm_epoch{epoch+1}.pt"
+    print(f"epoch {epoch+1:2d} lr={lr_at(global_step):.1e}")
+    print("   val ", fmt(evaluate(val_ds)))
+    print("   test", fmt(evaluate(test_ds)))
+    ckpt_path = f"/kaggle/working/{CKPT_PREFIX}_epoch{epoch+1}.pt"
     torch.save(core.state_dict(), ckpt_path)
     print(f"  saved {ckpt_path}")
 """
@@ -446,332 +560,29 @@ for epoch in range(N_EPOCHS):
 NEXT_MD = """\
 ## After this run
 
-1. Download the checkpoint from each epoch worth keeping (Kaggle's Output
-   panel, same as every prior stage -- don't wait until the end, per the
-   standing "download periodically during a run" lesson from Stage 3).
-2. `tools/realsong_test.py` needs adapting for stereo/44.1kHz output before
-   it can score this checkpoint on The Sentinel etc. -- not yet built.
-3. Select the checkpoint to keep by the real-song test, never by these
-   in-domain numbers alone -- the project's own repeated, measured lesson
-   (in-domain leak inverted the real-song ranking three separate times in
-   Stage 3's Update 5/6).
-4. If this succeeds: band-balance loss (`LAMBDA_BAND`) is the natural next
-   addition, since MoisesDB may finally have real signal for it. Add it as
-   its own isolated change, not bundled with anything else.
+1. Download checkpoints DURING the run (Kaggle Output panel), not only at
+   the end -- Kaggle RAM crashes have eaten checkpoints before.
+2. Score them locally on The Sentinel with `tools/realsong_test_stereo.py`
+   and listen. Select by the real song, never by these in-domain numbers
+   (five measured instances in this project of the in-domain metric
+   picking the wrong checkpoint).
+3. The real question for this run: does the **non-solo buzzing** go away?
+   `buzz` falling toward -30dB in-domain is the prediction; listening to
+   the rhythm-only passages of The Sentinel is the test. Compare against
+   v1's `htd_leadrhythm_lr2e4_cont_epoch7.pt` outputs in
+   `output/stage4_local_test/`.
+4. Only if buzzing persists: then the "MoisesDB has no metal rhythm"
+   hypothesis is back on the table (more data).
+
+## History
+
+v1 of this notebook (15 epochs at lr=1e-4, then resumes at 5e-4 / 2e-4 /
+overlap_bias=0.3) produced `htd_leadrhythm_lr2e4_cont_epoch7.pt`: real lead
+isolation on The Sentinel, but buzzing in non-solo passages, negative
+in-domain best_perm, and NaN at epoch 5-8. Those resume cells were removed
+in v2 because they continue from checkpoints trained on the boosted-noise
+targets; they are in git history (commit 9896369 and earlier).
 """
-
-RUN1_RESULT_MD = """\
-## Run 1 result (2026-10-15): stalled at lr=1e-4 -- resuming at 5x LR
-
-15 epochs completed. **`best_perm` never moved**: best single value across
-the whole run was epoch 14 at -18.07dB, barely off init's -19.69dB, inside
-the noise band every other epoch bounced in (-18 to -26dB). `role_acc` on
-test drifted up (epochs 1-8 averaged ~0.66, epochs 9-15 averaged ~0.75) --
-real enough to not be pure noise, but with zero accompanying `best_perm`
-gain that looks like a weak partial shortcut, not genuine separation.
-`leak10` (lead leaking into the rhythm output) degraded mid-run (down to
--17dB around epochs 10-12) and only partially recovered by the end.
-
-This is a harder warm start than every prior success in this project:
-every previous continuation (Stage 2->3, every Stage 3 update) resumed a
-backbone already trained on THIS task (separating a 2-guitar mixture).
-Here the HTDemucs backbone was trained on an unrelated task (full-song
-4-stem separation) and is seeing an input distribution (pure 2-guitar
-mixtures) it's never seen. `lr=1e-4` was copied from Stage 3's much
-smaller task-shift and may simply be too slow to move 42M pretrained
-params far enough in 3000 steps -- or the stall may be structural
-(resizing only the final layer isn't enough capacity to re-route). This
-cell tests which: **a single isolated change (5x higher LR), resuming
-from epoch 14 -- not from the original pretrained checkpoint, so whatever
-weak progress happened is preserved** -- watching specifically whether
-`best_perm` breaks out of the -18 to -26dB band.
-
-- If it climbs meaningfully -> this was a speed problem; keep going at
-  the higher LR.
-- If it stays pinned even at 5x LR -> real evidence this warm-start
-  strategy (fine-tune everything, resize only the last layer) can't
-  bridge this particular task gap -- the next move would be something
-  more structural (re-initializing more of the decoder) or accepting
-  this needs far more than 15-23 epochs (Stage 1's ConvTasNet run didn't
-  show its real breakthrough until epoch 30, though it started from a
-  much healthier quality level than this run is at).
-"""
-
-RESUME_CODE = """\
-# --- Resume from epoch 14 (the best single checkpoint of run 1).
-# FIRST ATTEMPT at lr=5e-4 DIVERGED after 1 epoch: best_perm went from
-# -18.38dB to -71/-65dB -- a 5x LR jump took destabilizing steps through
-# the pretrained 42M-param backbone rather than just speeding up useful
-# learning. Answers part of the open question sharply: the stall isn't
-# simply "needs a bigger LR", that direction overshoots fast. This is a
-# much smaller, more careful bump (2x, not 5x) re-testing the same
-# question. epoch14's checkpoint itself was never touched by the failed
-# attempt (it only wrote htd_leadrhythm_lr5e4_epoch1.pt separately), so
-# this reloads the same clean starting point.
-#
-# Fresh optimizer (same tradeoff accepted everywhere else in this
-# project's resume snippets -- Adam momentum from the stalled run isn't
-# worth preserving). LEAK_MARGIN recalibrated against THIS checkpoint,
-# same as Stage 3's Update 6 precedent, not reused from init.
-RESUME_EPOCH = 14
-LR_RESUME = 2e-4
-N_EPOCHS_RESUME = 8
-CKPT_PREFIX = "htd_leadrhythm_lr2e4"
-
-core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_epoch{RESUME_EPOCH}.pt",
-                                 map_location=DEVICE))
-print(f"loaded epoch {RESUME_EPOCH} weights")
-
-LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
-print(f"recalibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
-
-opt = torch.optim.Adam(model.parameters(), lr=LR_RESUME)
-scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
-
-start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
-print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
-      f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
-
-DIVERGE_FLOOR_DB = -50.0  # run 1 and the failed 5e-4 attempt never went below -32dB when healthy
-DIVERGE_CHECK_EVERY = 20  # catch a bad LR within ~1/10 of an epoch, not after the full 200 steps
-diverged = False
-
-for epoch in range(N_EPOCHS_RESUME):
-    for step in range(STEPS_PER_EPOCH):
-        mix, lead, rhythm = train_ds.sample_batch(BATCH)
-        mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
-        opt.zero_grad()
-        with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
-            out = model(mix)
-            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
-                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
-            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
-
-        if step % DIVERGE_CHECK_EVERY == 0:
-            bp = best_perm.mean().item()
-            if not torch.isfinite(loss) or bp < DIVERGE_FLOOR_DB:
-                print(f"  DIVERGED at epoch {epoch+1} step {step}: best_perm(train batch)={bp:.1f}dB. "
-                      f"Stopping early -- {CKPT_PREFIX} checkpoints saved so far (if any) are from "
-                      f"before this; epoch {RESUME_EPOCH}'s own checkpoint is untouched.")
-                diverged = True
-                break
-    if diverged:
-        break
-
-    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
-    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
-    print(f"resume-epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
-          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
-          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
-
-    ckpt_path = f"/kaggle/working/{CKPT_PREFIX}_epoch{epoch+1}.pt"
-    torch.save(core.state_dict(), ckpt_path)
-    print(f"  saved {ckpt_path}")
-"""
-
-RUN2_RESULT_MD = """\
-## Run 2 result (2026-10-15): lr=2e-4 worked (best_perm -17.7 -> -11.0dB), but
-## real-song listening found a real, specific problem -- not just noise
-
-The 2e-4 resume was stable (no divergence) and genuinely improved:
-`best_perm` -17.70 -> -11.03dB over 8 epochs, the best this investigation
-has produced. Still negative (0dB is roughly "no better than doing
-nothing"), so this is real progress off the floor, not a finished result.
-
-**Real-song test (The Sentinel, `tools/realsong_test_stereo.py`) on
-`htd_leadrhythm_lr2e4_epoch8.pt`:**
-
-```
-corr(out0, out1)              : +0.283
-Tipton-solo  window  out0/out1: 0.0255 / 0.1345   ratio 0.19
-Downing-solo window  out0/out1: 0.0222 / 0.1158   ratio 0.19
-```
-
-**The RMS-ratio metric was misleading -- confirmed by listening, not just
-suspected.** User's description: `out0` is "mostly the lead with a little
-bleed" during actual solos (correct, lead-dominant separation); `out1`
-during the same solos carries "both lead and rhythm guitars, much more
-bleed" (more total energy, not more correctly "the lead"). The 0.19 ratio
-reflects `out1`'s higher absolute level, not wrong routing -- the same
-trap this project hit with `corr` before it was retired as a quality
-indicator. Real, if partial, success: this is the first time in the
-HTDemucs line that real-audio lead isolation has been confirmed by ear.
-
-**The real, open problem: both outputs produce "buzzing and weird
-noises" specifically during NON-solo (pure rhythm) passages**, clearing
-up only when a solo is actually happening. Hypothesis: MoisesDB's 18
-training songs skew rock/pop/country/holiday -- nothing resembling
-metal's dense, high-gain, palm-muted rhythm chugging -- and the crop
-sampler's `overlap_bias=0.7` deliberately under-samples "pure rhythm, no
-solo" content relative to "something is soloing right now", compounding
-the gap for exactly the material this song's non-solo passages are made
-of. User chose to test this directly rather than just training longer.
-"""
-
-RESUME_V3_CODE = """\
-# --- Resume from epoch 8 of the lr=2e-4 run, same LR (that part is
-# already working -- don't change two variables at once), but with
-# overlap_bias lowered 0.7 -> 0.3 so training sees more "pure rhythm, no
-# solo" content -- directly testing the hypothesis that this is why both
-# outputs buzz on The Sentinel's non-solo passages. val_ds/test_ds kept
-# at the original bias (0.7) so the in-domain eval numbers stay
-# comparable across runs; only what the model TRAINS on changes.
-RESUME_EPOCH_V3 = "lr2e4_epoch8"
-LR_RESUME_V3 = 2e-4   # unchanged -- isolating the overlap_bias variable
-N_EPOCHS_V3 = 8
-CKPT_PREFIX_V3 = "htd_leadrhythm_ovl03"
-OVERLAP_BIAS_V3 = 0.3
-
-core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_{RESUME_EPOCH_V3}.pt",
-                                 map_location=DEVICE))
-print(f"loaded {RESUME_EPOCH_V3} weights")
-
-train_ds = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable, overlap_bias=OVERLAP_BIAS_V3)
-print(f"rebuilt train_ds with overlap_bias={OVERLAP_BIAS_V3} (was 0.7)")
-
-LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
-print(f"recalibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
-
-opt = torch.optim.Adam(model.parameters(), lr=LR_RESUME_V3)
-scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
-
-start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
-print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
-      f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
-
-DIVERGE_FLOOR_DB = -50.0
-DIVERGE_CHECK_EVERY = 20
-diverged = False
-
-for epoch in range(N_EPOCHS_V3):
-    for step in range(STEPS_PER_EPOCH):
-        mix, lead, rhythm = train_ds.sample_batch(BATCH)
-        mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
-        opt.zero_grad()
-        with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
-            out = model(mix)
-            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
-                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
-            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
-
-        if step % DIVERGE_CHECK_EVERY == 0:
-            bp = best_perm.mean().item()
-            if not torch.isfinite(loss) or bp < DIVERGE_FLOOR_DB:
-                print(f"  DIVERGED at epoch {epoch+1} step {step}: best_perm(train batch)={bp:.1f}dB. Stopping early.")
-                diverged = True
-                break
-    if diverged:
-        break
-
-    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
-    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
-    print(f"ovl03-epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
-          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
-          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
-
-    ckpt_path = f"/kaggle/working/{CKPT_PREFIX_V3}_epoch{epoch+1}.pt"
-    torch.save(core.state_dict(), ckpt_path)
-    print(f"  saved {ckpt_path}")
-"""
-
-RUN3_RESULT_MD = """\
-## Run 3 result (2026-10-15): overlap_bias=0.3 made things worse, diverged by epoch 5
-
-The hypothesis (under-exposure to "pure rhythm, no solo" content causes
-the real-song buzzing) was tested by lowering `overlap_bias` 0.7 -> 0.3.
-Result: a real, consistent regression, not noise -- `test perm` never
-recovered the -8.86dB starting point (-17.88, -17.10, **-30.75**, -22.42
-across epochs 1-4), `role_acc` climbed while `best_perm` cratered (the
-same shortcut signature flagged in run 1), and training hit outright
-**NaN at epoch 5 step 140**. Conclusion: reducing overlap exposure
-doesn't just fail to help, it destabilizes training -- plausibly because
-crops where one source is near-silent give the loss less gradient signal
-(routing near-silence correctly is nearly free), so the model gets
-*less* useful training signal, not more of the right kind.
-
-**Reverting**: continuing from `htd_leadrhythm_lr2e4_epoch8.pt` (the last
-good checkpoint, -11.03dB / correct lead-dominant separation on real
-solos) at the ORIGINAL `overlap_bias=0.7` and the same `lr=2e-4` that was
-already working. None of the `ovl03_epoch{1-4}.pt` checkpoints are worth
-keeping. The non-solo buzzing problem is still open; if more epochs of
-the working recipe don't resolve it, genuinely more diverse training
-data (not reweighting the same 18 songs) is the more likely next lever.
-"""
-
-RESUME_V4_CODE = """\
-# --- Revert to the overlap_bias=0.7 lineage, continuing from
-# htd_leadrhythm_lr2e4_epoch8.pt (NOT epoch 14 -- that would discard the
-# whole lr=2e-4 run's progress). Rebuilds train_ds back to 0.7 in case
-# this is the same kernel session that just ran the failed 0.3 attempt.
-# New checkpoint prefix so this does NOT overwrite the existing
-# htd_leadrhythm_lr2e4_epoch{1..8}.pt files.
-RESUME_EPOCH_V4 = "lr2e4_epoch8"
-LR_RESUME_V4 = 2e-4   # unchanged -- this was working
-N_EPOCHS_V4 = 8
-CKPT_PREFIX_V4 = "htd_leadrhythm_lr2e4_cont"
-OVERLAP_BIAS_V4 = 0.7   # reverted from the failed 0.3 experiment
-
-core.load_state_dict(torch.load(f"/kaggle/working/htd_leadrhythm_{RESUME_EPOCH_V4}.pt",
-                                 map_location=DEVICE))
-print(f"loaded {RESUME_EPOCH_V4} weights")
-
-train_ds = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable, overlap_bias=OVERLAP_BIAS_V4)
-print(f"train_ds overlap_bias={OVERLAP_BIAS_V4} (reverted from the failed 0.3 run)")
-
-LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
-print(f"recalibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
-
-opt = torch.optim.Adam(model.parameters(), lr=LR_RESUME_V4)
-scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
-
-start_perm, start_role, start_l01, start_l10 = evaluate(test_ds, n_batches=10)
-print(f"RESUME START  test best_perm={start_perm:.2f}dB role_acc={start_role:.2f} "
-      f"leak01={start_l01:.1f}dB leak10={start_l10:.1f}dB")
-
-DIVERGE_FLOOR_DB = -50.0
-DIVERGE_CHECK_EVERY = 20
-diverged = False
-
-for epoch in range(N_EPOCHS_V4):
-    for step in range(STEPS_PER_EPOCH):
-        mix, lead, rhythm = train_ds.sample_batch(BATCH)
-        mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
-        opt.zero_grad()
-        with torch.amp.autocast("cuda", enabled=(DEVICE == "cuda")):
-            out = model(mix)
-            pit, hinge, leak, best_perm, role_acc, _, _ = combined_loss(
-                out, lead, rhythm, leak_margin=LEAK_MARGIN, lambda_leak=LAMBDA_LEAK)
-            loss = pit + LAMBDA_HINGE * hinge + LAMBDA_LEAK * leak
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
-
-        if step % DIVERGE_CHECK_EVERY == 0:
-            bp = best_perm.mean().item()
-            if not torch.isfinite(loss) or bp < DIVERGE_FLOOR_DB:
-                print(f"  DIVERGED at epoch {epoch+1} step {step}: best_perm(train batch)={bp:.1f}dB. Stopping early.")
-                diverged = True
-                break
-    if diverged:
-        break
-
-    val_perm, val_role, val_l01, val_l10 = evaluate(val_ds, n_batches=10)
-    test_perm, test_role, test_l01, test_l10 = evaluate(test_ds, n_batches=10)
-    print(f"cont-epoch {epoch+1:2d}  val: perm={val_perm:6.2f}dB role={val_role:.2f}  "
-          f"test: perm={test_perm:6.2f}dB role={test_role:.2f} "
-          f"leak01={test_l01:.1f}dB leak10={test_l10:.1f}dB")
-
-    ckpt_path = f"/kaggle/working/{CKPT_PREFIX_V4}_epoch{epoch+1}.pt"
-    torch.save(core.state_dict(), ckpt_path)
-    print(f"  saved {ckpt_path}")
-"""
-
 
 def build_cells():
     return [
@@ -787,12 +598,6 @@ def build_cells():
         cell(CODE, EVAL_CODE),
         cell(CODE, TRAIN_CODE),
         cell(MD, NEXT_MD),
-        cell(MD, RUN1_RESULT_MD),
-        cell(CODE, RESUME_CODE),
-        cell(MD, RUN2_RESULT_MD),
-        cell(CODE, RESUME_V3_CODE),
-        cell(MD, RUN3_RESULT_MD),
-        cell(CODE, RESUME_V4_CODE),
     ]
 
 
