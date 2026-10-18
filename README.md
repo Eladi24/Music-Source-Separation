@@ -5,7 +5,7 @@ bass, guitar, piano, other).
 
 ## How it works
 
-This project doesn't train its own separation model. Getting a from-scratch
+The app doesn't train its own separation model. Getting a from-scratch
 model to generalize to arbitrary songs would need a large multi-track
 dataset (e.g. MUSDB18) and days of GPU training, with no guarantee of
 beating existing work. Instead, this wraps
@@ -71,12 +71,162 @@ width -- are distinguishable by stereo position even when nothing else
 distinguishes them. The **"Split a stem by stereo position (beta)"**
 section (after separating) uses that: pick a stem (usually guitar), and it
 splits it into a left-leaning and right-leaning pair. Validated on
-synthetic tests and a real track (details in `CLAUDE.md`) to give a real,
+synthetic tests and a real track to give a real,
 measurable improvement when the source material is panned apart, and
 correctly no improvement when it's centered/mono -- that's a hard limit of
 using stereo position as the only cue, not a bug.
 
 Full source *identification* (knowing these are "guitar 1" and "guitar 2"
 regardless of mix position, or separating two centered sources) is still
-unsolved and would be a real research project. See `CLAUDE.md` for the
-state of that.
+unsolved. The research below works on a more tractable version of it.
+
+## Research: separating lead guitar from rhythm guitar (work in progress)
+
+Not part of the app yet. This is an ongoing experiment toward the original
+goal, aimed at rock/metal with two guitarists.
+
+### The reframe that made progress possible
+
+Splitting "guitarist A" from "guitarist B" failed repeatedly. That label is
+arbitrary: nothing in the audio says which player belongs in which output.
+Splitting by **role** (lead/solo vs. rhythm/accompaniment) is learnable,
+because register, sustain, note density and phrasing differ. So the model
+has two outputs, `lead` and `rhythm`, and should put whoever is currently
+soloing into `lead`, whichever guitarist that is.
+
+### Where it stands
+
+The earlier attempts trained a 5M-parameter Conv-TasNet on synthetic
+mixtures of acoustic GuitarSet clips run through a distortion chain. Every
+fix we tried moved the result along one trade-off between a dull rhythm
+track and solo bleed, and nothing broke past it.
+
+The current approach fine-tunes **pretrained HTDemucs** (42M parameters,
+44.1kHz, trained on real music) on real multitrack recordings from
+[MoisesDB](https://github.com/moises-ai/moises-db):
+
+- **14 training songs** with separate lead and rhythm distorted-guitar
+  tracks. The roles were labelled by a small classifier trained on
+  GuitarSet's solo/comp recordings (97% held-out accuracy).
+- **9 songs with two rhythm guitars and no lead.** Real twin-guitar bands
+  spend most of a song like this, and without them the model tried to carve
+  a "lead" out of every two-guitar passage. Moments the classifier rates
+  lead-like are excluded.
+- **Evaluation:** 2 + 2 held-out lead/rhythm songs, 2 held-out two-rhythm
+  songs, and listening tests on Judas Priest's "The Sentinel".
+
+Best result so far (v3, epoch 5): on "The Sentinel" the lead output isolates
+the solos almost completely with very little rhythm bleed, and stays nearly
+silent outside them. The rhythm output is clean in non-solo passages but
+still lets the solos bleed through. There's also some buzzing, and its real
+guitar content came out too quiet because of a loss bug (see "DC" below).
+v3.1, warm-started from that checkpoint with the bug fixed and the loss
+rebalanced, is the current run.
+
+MoisesDB is licensed CC BY-NC-SA 4.0, so models trained on it are for
+non-commercial use only.
+
+### The loss function
+
+Each training example is a 4-second stereo crop:
+`mixture = lead track + rhythm track`. Either track may be silent in that
+crop: the lead rests during verses, and in two-rhythm songs the lead target
+is silent throughout. The loss handles each output differently depending on
+whether its guitar is playing. A guitar counts as playing if its target is
+louder than -20dB relative to the mixture.
+
+**1. Reconstruction, when the guitar is playing.**
+
+    -SI-SDR(output, target)  +  1.0 * level_error  +  1.0 * dc_penalty
+
+- **SI-SDR** (scale-invariant signal-to-distortion ratio) scores how well
+  the output's *waveform* matches the target, ignoring overall loudness.
+  Ignoring loudness matters. An earlier version used a loudness-aware score,
+  and whenever the model was unsure, its best move under the loss was to
+  turn the output down. The lead output went effectively silent for a whole
+  20-epoch run.
+- **level_error** brings loudness back in, but softly: the difference
+  between output and target level in dB, counted only beyond a ±3dB
+  deadzone. Without it, an output can drift arbitrarily loud. One earlier
+  version came out 11dB too loud and full of noise.
+- **dc_penalty** pushes any constant offset (DC) in the output below -30dB
+  of the target. Level is measured with DC removed. Otherwise the model can
+  meet the level target with an inaudible constant offset while the real
+  guitar stays quiet. It found exactly that loophole in v3.
+
+**2. Silence, when the guitar isn't playing.**
+
+    2.0 * -10*log10( (tau*|mixture|^2) / (|output|^2 + tau*|mixture|^2) )      tau = -30dB
+
+This is zero when the output is silent and rises toward 30 as the output gets
+as loud as the mixture. It's bounded both ways and stays well-defined when
+the target is pure silence; SI-SDR breaks there. This term is what removes
+the buzzing that earlier versions produced in passages where one guitar
+rests. The weight is a balance. At 4.0 the lead output learned that staying
+quiet was the safe bet and slid back to silence; 2.0 is the current
+compromise.
+
+**3. Which output is which.**
+
+- **Both guitars playing:** permutation-invariant training (PIT). The loss
+  takes the better of the two output-to-target assignments, so a model that
+  separates well but has the outputs swapped isn't punished harder than one
+  that outputs the mixture twice. An earlier experiment collapsed for
+  exactly that reason.
+- **Only one guitar playing:** the assignment is fixed (lead → output 0,
+  rhythm → output 1). Otherwise "rhythm in the lead slot" would score just
+  as well, and nothing would teach routing in non-solo passages.
+
+**4. Routing hinge**, both guitars playing, weight 3.0:
+
+    max(0, 1dB - (SI-SDR(out0, lead) - SI-SDR(out0, rhythm)))
+
+This is the term that actually teaches "output 0 is the lead". It pushes
+output 0 to resemble the lead at least 1dB more than it resembles the
+rhythm. It's bounded: once that holds, it contributes nothing and stops
+fighting the reconstruction terms.
+
+**5. Leak penalty**, both guitars playing, weight 1.0:
+
+    max(0, SI-SDR(out0, rhythm) - m) + max(0, SI-SDR(out1, lead) - m)
+
+This penalises each output for containing the *other* guitar, which is the
+bleed you hear. The margin `m` is calibrated from the starting model's own
+leakage minus 2dB, so the term only pushes for improvement and switches
+off once it's achieved.
+
+**Total:** `reconstruction-or-silence (averaged over both outputs) + 3.0 * hinge + 1.0 * leak`
+
+### Hyperparameters (v3.1) and why
+
+| Setting | Value | Why |
+|---|---|---|
+| Sample rate / crop | 44.1kHz stereo, 4s | HTDemucs's native rate; no resampling, no bandwidth ceiling |
+| Batch | 8 (4 per GPU, 2× T4) | Fits Kaggle's free GPUs with mixed precision |
+| Steps / epochs | 200 per epoch, 15 epochs | Data is cropped on the fly, so an "epoch" is just a reporting interval |
+| Peak learning rate | 1e-4 | Fine-tuning from v3 epoch 5. Fresh starts used 2e-4: 1e-4 stalled, 5e-4 diverged |
+| LR schedule | 1-epoch linear warmup, cosine decay to 5% | A flat 2e-4 hit NaN twice around epochs 5-8 |
+| Gradient clipping | norm 5.0 | Extra insurance against those divergences |
+| Silence weight | 2.0 | 4.0 made a quiet lead output the safe bet (see above) |
+| Level weight / deadzone | 1.0, ±3dB | Keeps outputs at the right loudness without being a second content score |
+| Hinge weight / margin | 3.0, 1dB | Weaker weights didn't move routing in earlier experiments |
+| Leak weight / margin | 1.0, self-calibrated | Bounded, so it can't trade away fidelity indefinitely |
+| "Playing" threshold | -20dB vs mixture | Below this, a track counts as resting: bleed or amp hiss, not playing |
+| Two-rhythm share | 10% of crops | 25% over-taught "two guitars → all rhythm", so solos leaked into the rhythm output |
+| Overlap bias | 70% of crops centred where both guitars play | Simultaneous playing is the hard case; the other 30% teaches silence and solo-only passages |
+| Gain | One shared gain per crop, mixture RMS 0.1 | Normalising each track separately boosted a resting track's amp hiss 40-90dB into a full-loudness target, the root cause of the original buzzing |
+
+### Reproducing
+
+- `tools/build_stage4_notebook.py` generates the training notebook (Kaggle
+  and Colab versions) into `output/stage4_kaggle/`.
+- `tools/pull_moisesdb_guitar.py` fetches only the guitar stems of the
+  qualifying MoisesDB songs (~6GB of the 83GB archive).
+- `tools/diagnose_htd_ckpt.py` scores a checkpoint per output: content
+  quality and level, on held-out songs.
+- `tools/realsong_test_stereo.py` runs a checkpoint on a real song for
+  listening.
+
+The most important lesson so far: numbers measured on the training
+material have picked the wrong checkpoint many times. Checkpoints are chosen
+by listening to real songs.

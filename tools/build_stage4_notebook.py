@@ -130,6 +130,18 @@ Two fixes:
    training never contained. 2 more such songs are held out for a dedicated
    eval line. Listening-approved before the run.
 
+## v3.1 (2026-10-18): warm start from v3 epoch 5, rebalanced
+
+v3 run 1: at epoch 5 the lead output broke out (test SI-SDR -5.5dB, near-
+complete solo isolation by ear, the best lead of the project), then slid back
+toward silence as the model over-learned "two guitars -> all rhythm" (two-
+rhythm eval +20dB, but solos leaking into the rhythm output). Also found: a
+DC-offset loophole (SI-SDR ignores DC; the level term counted it), so the
+rhythm output's real content stayed ~20dB quiet. v3.1: warm start from
+`htd_v3_epoch5.pt` (attach it as a Kaggle Dataset), level measured without
+DC + a DC penalty, silence x4 -> x2, level weight 0.5 -> 1.0, two-rhythm
+share 25% -> 10%, peak LR 1e-4, 15 epochs.
+
 ## What to watch
 
 - **`sep`** -- both-active separation, mixture-thresholded SNR (capped
@@ -173,14 +185,15 @@ SEG_SEC = 4.0
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 USE_DP = torch.cuda.device_count() > 1
 BATCH = 8 if USE_DP else 4   # conservative starting point -- this model is 8x the ConvTasNet's size
-N_EPOCHS = 20
-LR_PEAK = 2e-4       # v1: 1e-4 stalled, 5e-4 diverged, 2e-4 progressed (flat 2e-4 later NaN'd -> schedule below)
+N_EPOCHS = 15
+LR_PEAK = 1e-4       # v3.1: fine-tuning from htd_v3_epoch5, not learning from scratch (fresh starts used 2e-4)
 GRAD_CLIP = 5.0
-CKPT_PREFIX = "htd_v3"
-LAMBDA_SIL = 4.0     # v3: weight on the not-playing silence term (overfit test: x4 kept v2's silence, -29 vs -31dB)
-LAMBDA_LVL = 0.5     # v3: level-match term for playing sources, outside a +-3dB deadzone
+CKPT_PREFIX = "htd_v31"
+LAMBDA_SIL = 2.0     # v3.1: was 4.0. At x4 the lead output slid back to silence after epoch 5 (CLAUDE.md 2026-10-18)
+LAMBDA_LVL = 1.0     # v3.1: was 0.5; level-match term for playing sources (DC excluded), outside a +-3dB deadzone
 LVL_DEADZONE = 3.0
-DOUBLE_RHYTHM_FRAC = 0.25   # v3: share of training crops drawn from two-rhythm-guitar songs (see split cell)
+DOUBLE_RHYTHM_FRAC = 0.10   # v3.1: was 0.25, which over-taught "two guitars -> all rhythm" (solos leaked into rhythm)
+INIT_CKPT = "htd_v3_epoch5.pt"   # v3.1: warm start from v3's best lead checkpoint; None = fresh from pretrained
 LAMBDA_HINGE = 3.0   # Stage 2/3 found this is where routing actually gets a real gradient
 LAMBDA_LEAK = 1.0    # conservative starting weight, same philosophy as every prior leak-loss run
 LAMBDA_BAND = 0.0    # deliberately off this run -- see markdown above
@@ -235,6 +248,14 @@ def build_leadrhythm_htdemucs(sources=("lead", "rhythm")):
 
 
 model = build_leadrhythm_htdemucs()
+if INIT_CKPT:
+    # Upload the checkpoint as a private Kaggle Dataset and attach it (+ Add Input);
+    # on Colab, put it in /content. Searched for by file name.
+    found = [os.path.join(r, INIT_CKPT) for base in ("/kaggle/input", "/content")
+             for r, _, fs in os.walk(base) if INIT_CKPT in fs]
+    assert found, f"{INIT_CKPT} not found under /kaggle/input or /content -- attach it first"
+    model.load_state_dict(torch.load(found[0], map_location="cpu"))
+    print("warm start from", found[0])
 backbone_params = sum(p.numel() for n, p in model.named_parameters()
                        if "decoder.3.conv_tr" not in n and "tdecoder.3.conv_tr" not in n)
 head_params = sum(p.numel() for n, p in model.named_parameters()) - backbone_params
@@ -294,6 +315,16 @@ def level_db(x, mix):
     return 10 * torch.log10((_flat(x) ** 2).sum(-1) / ((_flat(mix) ** 2).sum(-1) + 1e-12) + 1e-12)
 
 
+def _zm(x):
+    return x - x.mean(-1, keepdim=True)   # remove DC per channel
+
+
+def dc_db(x, ref):
+    \"\"\"DC energy of x relative to ref's AC energy, dB.\"\"\"
+    dc = x.float().mean(-1, keepdim=True).expand_as(x)
+    return level_db(dc, _zm(ref))
+
+
 def _mmean(x, mask):
     return (x * mask).sum() / mask.sum().clamp(min=1.0)
 
@@ -310,8 +341,14 @@ def recon_hybrid(o, ref, mix, on):
     Overfit test (tools/overfit_loss_test.py, 4 crops, 160 steps): lead +2.6 /
     rhythm +4.8dB SI-SDR vs v2's -2.9 / -1.4dB, levels within +-1.5dB, resting-
     lead output -29.4dB vs v2's -31.3dB.\"\"\"
-    lvl = F.relu(level_db(o, ref).abs() - LVL_DEADZONE).clamp(max=30.0)
-    active = -sisdr_flat(o, ref) + LAMBDA_LVL * lvl
+    # v3.1: level measured with DC removed. v3 run 1 found the loophole: SI-SDR
+    # ignores DC, and the level term counted DC as level, so the rhythm output
+    # met "right level" with a -0.075 constant offset while its actual guitar
+    # content stayed ~20dB quiet (CLAUDE.md 2026-10-18). DC is now also pushed
+    # below -30dB of the target directly.
+    lvl = F.relu(level_db(_zm(o), _zm(ref)).abs() - LVL_DEADZONE).clamp(max=30.0)
+    dc = F.relu(dc_db(o, ref) + 30.0).clamp(max=30.0)
+    active = -sisdr_flat(o, ref) + LAMBDA_LVL * (lvl + dc)
     inactive = LAMBDA_SIL * -snr_mix(o, torch.zeros_like(ref), mix)
     return torch.where(on, active, inactive)
 
@@ -353,8 +390,8 @@ def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_l
         # hid that the rhythm output learned (-2dB) while the lead output stayed
         # near-silent and got worse (-28dB). See CLAUDE.md 2026-10-18.
         "lead_q": _mmean(q00.detach(), both), "rhy_q": _mmean(q11.detach(), both),
-        "lead_lvl": _mmean(level_db(o0, LEAD).detach(), both),
-        "rhy_lvl": _mmean(level_db(o1, RHYTHM).detach(), both),
+        "lead_lvl": _mmean(level_db(_zm(o0), _zm(LEAD)).detach(), both),   # DC excluded (v3.1)
+        "rhy_lvl": _mmean(level_db(_zm(o1), _zm(RHYTHM)).detach(), both),
         "leak01": _mmean(q01.detach(), both), "leak10": _mmean(q10.detach(), both),
         # "buzz": how loud an output is when its own target isn't playing (dB vs the
         # mix; lower is better, -30 is the floor the loss asks for). This is v1's
@@ -365,7 +402,7 @@ def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_l
         "n_both": both.sum(),
         # rhythm output over ALL crops where the rhythm plays, for the two-rhythm eval
         "rhy_q_on": _mmean(q11.detach(), rhy_on.float()),
-        "rhy_lvl_on": _mmean(level_db(o1, RHYTHM).detach(), rhy_on.float()),
+        "rhy_lvl_on": _mmean(level_db(_zm(o1), _zm(RHYTHM)).detach(), rhy_on.float()),
     }
     return pit_loss, hinge, leak, m
 
@@ -629,15 +666,15 @@ def evaluate_dbl(n_batches=6, batch_size=BATCH):
             out = model(mix)
             lead_db.append(level_db(out[:, 0], mix).clamp(min=-60).mean().item())
             q.append(sisdr_flat(out[:, 1], rhythm).mean().item())
-            lvl.append(level_db(out[:, 1], rhythm).mean().item())
+            lvl.append(level_db(_zm(out[:, 1]), _zm(rhythm)).mean().item())
     model.train()
     return (f"two-rhythm: lead-out vs mix={np.mean(lead_db):6.1f}dB | "
             f"rhythm: SI-SDR={np.mean(q):6.1f}dB level={np.mean(lvl):+6.1f}dB")
 """
 
 TRAIN_CODE = """\
-# --- Main training loop (v2). Fresh start from pretrained HTDemucs -- NOT
-# from v1's checkpoints, which learned the boosted-noise targets.
+# --- Main training loop. v3.1 warm-starts from INIT_CKPT (see config); with
+# INIT_CKPT = None it starts fresh from pretrained HTDemucs.
 # Stability, after v1 hit NaN twice at a flat lr=2e-4 around epoch 5-8:
 # linear warmup over the first epoch, cosine decay to 5% of peak, and
 # gradient-norm clipping. The divergence guard is kept, but only checks for
