@@ -111,6 +111,25 @@ warmup + cosine LR and gradient clipping. Training samples were
 listening-approved before this run, per the hard gate. See CLAUDE.md
 2026-10-18.
 
+## v3 (2026-10-18): hybrid loss + two-rhythm-guitar songs
+
+v2 run 1 (20 epochs) fixed the silence problem, but the **lead output never
+learned**: effectively silent all run. On The Sentinel, the rhythm output
+kept only ~12-20% of the guitar in non-solo passages, which sounded
+blurry/underwater, and was bright and well isolated only during the solos.
+Two fixes:
+
+1. **Hybrid loss.** SI-SDR for playing sources (no reward for going quiet) +
+   a level-match term (+-3dB deadzone) + v2's silence term x4 for
+   non-playing sources. Overfit test: lead +2.6 / rhythm +4.8dB vs v2's
+   -2.9 / -1.4dB, with near-identical silence (-29.4 vs -31.3dB).
+2. **Two-rhythm-guitar songs.** 9 MoisesDB songs where both guitars play
+   rhythm (excluded before as "no clear lead/rhythm split"), trained with
+   target lead = silence and rhythm = both guitars, at 25% of crops. This is
+   The Sentinel's twin-rhythm non-solo case (confirmed by the user), which
+   training never contained. 2 more such songs are held out for a dedicated
+   eval line. Listening-approved before the run.
+
 ## What to watch
 
 - **`sep`** -- both-active separation, mixture-thresholded SNR (capped
@@ -122,6 +141,13 @@ listening-approved before this run, per the hard gate. See CLAUDE.md
 - **`buzz`** -- how loud an output is (dB vs the mix) when its own target
   isn't playing. This measures v1's non-solo buzzing directly: it should
   fall toward -30dB.
+- **`lead:` / `rhythm:` lines** -- per-output SI-SDR (content, ignores
+  level) and level vs the true target. **The lead line is the one that
+  failed in v2 run 1**: watch its SI-SDR climb and its level stay near 0dB,
+  not drift to -25dB.
+- **`two-rhythm:` line** (v3) -- held-out songs with no lead: lead output
+  should stay far below the mix, and rhythm SI-SDR should be high with level
+  near 0dB.
 - Band-balance loss stays off (one change at a time).
 - Real-song test: `tools/realsong_test_stereo.py`, locally, on downloaded
   checkpoints.
@@ -150,7 +176,11 @@ BATCH = 8 if USE_DP else 4   # conservative starting point -- this model is 8x t
 N_EPOCHS = 20
 LR_PEAK = 2e-4       # v1: 1e-4 stalled, 5e-4 diverged, 2e-4 progressed (flat 2e-4 later NaN'd -> schedule below)
 GRAD_CLIP = 5.0
-CKPT_PREFIX = "htd_v2"
+CKPT_PREFIX = "htd_v3"
+LAMBDA_SIL = 4.0     # v3: weight on the not-playing silence term (overfit test: x4 kept v2's silence, -29 vs -31dB)
+LAMBDA_LVL = 0.5     # v3: level-match term for playing sources, outside a +-3dB deadzone
+LVL_DEADZONE = 3.0
+DOUBLE_RHYTHM_FRAC = 0.25   # v3: share of training crops drawn from two-rhythm-guitar songs (see split cell)
 LAMBDA_HINGE = 3.0   # Stage 2/3 found this is where routing actually gets a real gradient
 LAMBDA_LEAK = 1.0    # conservative starting weight, same philosophy as every prior leak-loss run
 LAMBDA_BAND = 0.0    # deliberately off this run -- see markdown above
@@ -268,25 +298,47 @@ def _mmean(x, mask):
     return (x * mask).sum() / mask.sum().clamp(min=1.0)
 
 
+def recon_hybrid(o, ref, mix, on):
+    \"\"\"v3 reconstruction term, per example (lower is better).
+    v2 used snr_mix for everything. Its level-aware score has a "turn it down
+    when unsure" optimum, and in v2 run 1 the lead output did exactly that:
+    effectively silent for all 20 epochs (CLAUDE.md 2026-10-18). Now:
+      playing source:     -SI-SDR (no reward for going quiet)
+                          + LAMBDA_LVL * level error beyond a +-3dB deadzone
+                            (so outputs can't drift loud like v1, +11.5dB)
+      not-playing source: LAMBDA_SIL * v2's silence term
+    Overfit test (tools/overfit_loss_test.py, 4 crops, 160 steps): lead +2.6 /
+    rhythm +4.8dB SI-SDR vs v2's -2.9 / -1.4dB, levels within +-1.5dB, resting-
+    lead output -29.4dB vs v2's -31.3dB.\"\"\"
+    lvl = F.relu(level_db(o, ref).abs() - LVL_DEADZONE).clamp(max=30.0)
+    active = -sisdr_flat(o, ref) + LAMBDA_LVL * lvl
+    inactive = LAMBDA_SIL * -snr_mix(o, torch.zeros_like(ref), mix)
+    return torch.where(on, active, inactive)
+
+
 def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_leak=0.0):
     o0, o1 = est[:, 0], est[:, 1]
-    s00, s11 = snr_mix(o0, LEAD, MIX), snr_mix(o1, RHYTHM, MIX)
-    s01, s10 = snr_mix(o0, RHYTHM, MIX), snr_mix(o1, LEAD, MIX)
-    l_same, l_swap = -(s00 + s11) / 2, -(s01 + s10) / 2
-
     lead_on = level_db(LEAD, MIX) > ACTIVE_DB
     rhy_on = level_db(RHYTHM, MIX) > ACTIVE_DB
     both = (lead_on & rhy_on).float()
+
+    l_same = (recon_hybrid(o0, LEAD, MIX, lead_on) + recon_hybrid(o1, RHYTHM, MIX, rhy_on)) / 2
+    l_swap = (recon_hybrid(o0, RHYTHM, MIX, rhy_on) + recon_hybrid(o1, LEAD, MIX, lead_on)) / 2
+    # `sep` metric kept on v2's SNR score so it stays comparable with v2 run 1's log
+    with torch.no_grad():
+        s00, s11 = snr_mix(o0, LEAD, MIX), snr_mix(o1, RHYTHM, MIX)
+        s01, s10 = snr_mix(o0, RHYTHM, MIX), snr_mix(o1, LEAD, MIX)
+        sep_same, sep_swap = (s00 + s11) / 2, (s01 + s10) / 2
     # PIT only where both sources play. Where only one plays, PIT would let the
     # model swap slots for free (rhythm in out0 scores the same) and the hinge
     # is masked, so nothing would enforce routing in non-solo passages. There
     # the assignment is fixed (lead->out0, rhythm->out1). The score is bounded,
     # so this doesn't recreate Stage 2's directed-loss collapse:
-    # correct (-15) < collapse-to-mixture (0) < wrong route (+15).
+    # correct < collapse-to-mixture < wrong route (re-checked for the v3 terms).
     pit_loss = torch.where(both > 0, torch.minimum(l_same, l_swap), l_same).mean()
 
     q00, q01 = sisdr_flat(o0, LEAD), sisdr_flat(o0, RHYTHM)
-    q10 = sisdr_flat(o1, LEAD)
+    q10, q11 = sisdr_flat(o1, LEAD), sisdr_flat(o1, RHYTHM)
     hinge = _mmean(F.relu(margin - (q00 - q01)), both)
     if lambda_leak > 0 and leak_margin is not None:
         leak = (_mmean(F.relu(q01 - leak_margin), both) + _mmean(F.relu(q10 - leak_margin), both)) / 2
@@ -294,8 +346,15 @@ def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_l
         leak = torch.zeros((), device=est.device)
 
     m = {
-        "sep": _mmean(torch.maximum(-l_same, -l_swap).detach(), both),   # both-active separation, dB
+        "sep": _mmean(torch.maximum(sep_same, sep_swap), both),   # both-active separation, dB (v2's SNR)
         "role": _mmean((q00 > q01).float(), both),
+        # Per-output content quality (SI-SDR, ignores level) and level vs the true
+        # target, both-active crops. Added after v2 run 1, where an averaged score
+        # hid that the rhythm output learned (-2dB) while the lead output stayed
+        # near-silent and got worse (-28dB). See CLAUDE.md 2026-10-18.
+        "lead_q": _mmean(q00.detach(), both), "rhy_q": _mmean(q11.detach(), both),
+        "lead_lvl": _mmean(level_db(o0, LEAD).detach(), both),
+        "rhy_lvl": _mmean(level_db(o1, RHYTHM).detach(), both),
         "leak01": _mmean(q01.detach(), both), "leak10": _mmean(q10.detach(), both),
         # "buzz": how loud an output is when its own target isn't playing (dB vs the
         # mix; lower is better, -30 is the floor the loss asks for). This is v1's
@@ -304,6 +363,9 @@ def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_l
                     + (level_db(o1, MIX).detach().clamp(min=-60) * (~rhy_on)).sum(),
         "buzz_n": (~lead_on).sum() + (~rhy_on).sum(),
         "n_both": both.sum(),
+        # rhythm output over ALL crops where the rhythm plays, for the two-rhythm eval
+        "rhy_q_on": _mmean(q11.detach(), rhy_on.float()),
+        "rhy_lvl_on": _mmean(level_db(o1, RHYTHM).detach(), rhy_on.float()),
     }
     return pit_loss, hinge, leak, m
 
@@ -351,9 +413,15 @@ def find_active_windows(path, win_sec=2.0):
 
 class MoisesLeadRhythmDataset:
     def __init__(self, data_dir, track_ids, labels_by_id, seg_sec=SEG_SEC,
-                 overlap_bias=0.7, active_thresh=0.01):
+                 overlap_bias=0.7, active_thresh=0.01, double_rhythm=False, blocked=None):
+        # double_rhythm (v3): both tracks are rhythm parts. Target is lead =
+        # silence, rhythm = both guitars -- the "two rhythm guitars, nobody
+        # soloing" case that dominates The Sentinel's non-solo passages and was
+        # absent from v1/v2 training.
         self.seg_sec = seg_sec
         self.overlap_bias = overlap_bias
+        self.double_rhythm = double_rhythm
+        blocked = blocked or {}   # track_id -> 2s window indices never to sample (lead-rated)
         self.songs = []
         for tid in track_ids:
             r = labels_by_id[tid]
@@ -364,21 +432,33 @@ class MoisesLeadRhythmDataset:
             assert sr == sr2 == SR
             n = min(len(lead_rms), len(rhythm_rms))
             both = np.where((lead_rms[:n] > active_thresh) & (rhythm_rms[:n] > active_thresh))[0]
+            bl = set(blocked.get(tid, []))
+            both = np.array([i for i in both if not ({i - 1, i, i + 1} & bl)], dtype=int)
             self.songs.append({
+                "blocked": bl,
                 "track_id": tid, "artist": r["artist"], "song": r["song"],
                 "lead_path": lead_path, "rhythm_path": rhythm_path,
                 "n_samples": min(n_lead, n_rhythm), "overlap_windows": both,
                 "overlap_frac": len(both) / max(1, n),
             })
 
+    def _clear(self, song, start, seg_n):
+        if not song["blocked"]:
+            return True
+        w0, w1 = start // (2 * SR), (start + seg_n - 1) // (2 * SR)
+        return not (set(range(w0, w1 + 1)) & song["blocked"])
+
     def _sample_start(self, song):
         seg_n = int(self.seg_sec * SR)
         max_start = max(1, song["n_samples"] - seg_n)
-        if len(song["overlap_windows"]) > 0 and random.random() < self.overlap_bias:
-            center = int(random.choice(song["overlap_windows"]) * 2.0 * SR) + SR
-            start = max(0, min(max_start, center - seg_n // 2))
-        else:
-            start = random.randint(0, max_start)
+        for _try in range(50):
+            if len(song["overlap_windows"]) > 0 and random.random() < self.overlap_bias:
+                center = int(random.choice(song["overlap_windows"]) * 2.0 * SR) + SR
+                start = max(0, min(max_start, center - seg_n // 2))
+            else:
+                start = random.randint(0, max_start)
+            if self._clear(song, start, seg_n):
+                break
         return start
 
     def _read_crop(self, song, start, seg_n):
@@ -390,25 +470,40 @@ class MoisesLeadRhythmDataset:
             out.append(x)
         return out
 
-    def sample_batch(self, batch_size):
+    def sample_one(self):
         seg_n = int(self.seg_sec * SR)
-        leads, rhythms = [], []
-        for _ in range(batch_size):
-            for _try in range(20):
-                song = random.choice(self.songs)
-                lead, rhythm = self._read_crop(song, self._sample_start(song), seg_n)
-                mix_rms = np.sqrt(np.mean((lead + rhythm) ** 2))
-                if mix_rms >= SILENT_MIX_RMS:
-                    break
-            g = MIX_RMS / max(mix_rms, 1e-8)       # one gain for the pair
-            peak = np.abs(lead + rhythm).max() * g
-            if peak > 0.95:
-                g *= 0.95 / peak
-            leads.append((lead * g).T)
-            rhythms.append((rhythm * g).T)
-        lead_t = torch.from_numpy(np.stack(leads)).float()
-        rhythm_t = torch.from_numpy(np.stack(rhythms)).float()
-        return lead_t + rhythm_t, lead_t, rhythm_t
+        for _try in range(20):
+            song = random.choice(self.songs)
+            lead, rhythm = self._read_crop(song, self._sample_start(song), seg_n)
+            mix_rms = np.sqrt(np.mean((lead + rhythm) ** 2))
+            if mix_rms >= SILENT_MIX_RMS:
+                break
+        if self.double_rhythm:
+            lead, rhythm = np.zeros_like(lead), lead + rhythm
+        g = MIX_RMS / max(mix_rms, 1e-8)       # one gain for the pair
+        peak = np.abs(lead + rhythm).max() * g
+        if peak > 0.95:
+            g *= 0.95 / peak
+        return (lead * g).T, (rhythm * g).T
+
+    def sample_batch(self, batch_size):
+        return _stack([self.sample_one() for _ in range(batch_size)])
+
+
+def _stack(items):
+    lead_t = torch.from_numpy(np.stack([a for a, _ in items])).float()
+    rhythm_t = torch.from_numpy(np.stack([b for _, b in items])).float()
+    return lead_t + rhythm_t, lead_t, rhythm_t
+
+
+class MixedDataset:
+    \"\"\"Each crop comes from `extra` with probability `frac`, else from `main`.\"\"\"
+    def __init__(self, main, extra, frac):
+        self.main, self.extra, self.frac = main, extra, frac
+
+    def sample_batch(self, batch_size):
+        return _stack([(self.extra if random.random() < self.frac else self.main).sample_one()
+                       for _ in range(batch_size)])
 """
 
 SPLIT_CODE = """\
@@ -429,9 +524,31 @@ val_ids = [s["track_id"] for s in by_overlap[2:4]]
 train_ids = [s["track_id"] for s in by_overlap[4:]]
 print(f"\\ntrain={len(train_ids)} val={len(val_ids)} test={len(test_ids)}")
 
-train_ds = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable)
 val_ds = MoisesLeadRhythmDataset(DATA_DIR, val_ids, usable)
 test_ds = MoisesLeadRhythmDataset(DATA_DIR, test_ids, usable)
+
+# v3: two-rhythm-guitar songs -- the ones v1/v2 excluded as "no clear lead/rhythm
+# split", with BOTH tracks rated rhythm-like by the role classifier (mean
+# P(lead) < 0.3; drops "Broken" at 0.35 and "Lifeboat", whose tracks are both
+# lead-like). 11 songs; 2 held out (different artists) for a dedicated eval.
+# Listening-approved before this run, per the hard gate.
+dbl = {r["track_id"]: r for r in labels
+       if not r["usable"] and r["lead_p"] < 0.3 and r["rhythm_p"] < 0.3}
+# Some of these tracks still have short lead-like stretches (melody lines,
+# fills; up to 13-15% of windows in 3 songs). Windows the role classifier rates
+# lead (P>0.5) on either track are never sampled. Computed locally by
+# tools/dbl_rhythm_windows.py and embedded here, so the Kaggle dataset needn't change.
+DBL_BLOCKED = __DBL_BLOCKED__
+DBL_EVAL_SONGS = {"Dear You", "Snake Eyes"}
+dbl_eval_ids = [t for t, r in dbl.items() if r["song"] in DBL_EVAL_SONGS]
+dbl_train_ids = [t for t, r in dbl.items() if r["song"] not in DBL_EVAL_SONGS]
+print(f"two-rhythm songs: train={len(dbl_train_ids)} eval={len(dbl_eval_ids)}")
+assert len(dbl_eval_ids) == 2
+
+train_main = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable)
+train_dbl = MoisesLeadRhythmDataset(DATA_DIR, dbl_train_ids, dbl, double_rhythm=True, blocked=DBL_BLOCKED)
+train_ds = MixedDataset(train_main, train_dbl, DOUBLE_RHYTHM_FRAC)
+dbl_eval_ds = MoisesLeadRhythmDataset(DATA_DIR, dbl_eval_ids, dbl, double_rhythm=True, blocked=DBL_BLOCKED)
 """
 
 SMOKETEST_CODE = """\
@@ -471,7 +588,8 @@ def evaluate(dataset, n_batches=10, batch_size=BATCH):
     \"\"\"Returns sep / role / leak01 / leak10 over both-active crops, and buzz
     (mean output level vs the mix when that output's target is silent).\"\"\"
     model.eval()
-    acc = {"sep": 0.0, "role": 0.0, "leak01": 0.0, "leak10": 0.0}
+    acc = {"sep": 0.0, "role": 0.0, "leak01": 0.0, "leak10": 0.0,
+           "lead_q": 0.0, "rhy_q": 0.0, "lead_lvl": 0.0, "rhy_lvl": 0.0}
     w, buzz_sum, buzz_n = 0.0, 0.0, 0
     with torch.no_grad():
         for _ in range(n_batches):
@@ -493,7 +611,28 @@ def evaluate(dataset, n_batches=10, batch_size=BATCH):
 
 def fmt(r):
     return (f"sep={r['sep']:6.2f}dB role={r['role']:.2f} leak01={r['leak01']:6.1f} "
-            f"leak10={r['leak10']:6.1f} buzz={r['buzz']:6.1f}dB(n={r['buzz_n']})")
+            f"leak10={r['leak10']:6.1f} buzz={r['buzz']:6.1f}dB(n={r['buzz_n']})\\n"
+            f"         lead: SI-SDR={r['lead_q']:6.1f}dB level={r['lead_lvl']:+6.1f}dB | "
+            f"rhythm: SI-SDR={r['rhy_q']:6.1f}dB level={r['rhy_lvl']:+6.1f}dB")
+
+
+def evaluate_dbl(n_batches=6, batch_size=BATCH):
+    \"\"\"v3: held-out two-rhythm-guitar songs. Right answer: lead output silent
+    (lead_vs_mix -> -30dB or lower), rhythm output = both guitars at the right
+    level (SI-SDR high, level ~0dB). This is The Sentinel's non-solo case.\"\"\"
+    model.eval()
+    lead_db, q, lvl = [], [], []
+    with torch.no_grad():
+        for _ in range(n_batches):
+            mix, lead, rhythm = dbl_eval_ds.sample_batch(batch_size)
+            mix, rhythm = mix.to(DEVICE), rhythm.to(DEVICE)
+            out = model(mix)
+            lead_db.append(level_db(out[:, 0], mix).clamp(min=-60).mean().item())
+            q.append(sisdr_flat(out[:, 1], rhythm).mean().item())
+            lvl.append(level_db(out[:, 1], rhythm).mean().item())
+    model.train()
+    return (f"two-rhythm: lead-out vs mix={np.mean(lead_db):6.1f}dB | "
+            f"rhythm: SI-SDR={np.mean(q):6.1f}dB level={np.mean(lvl):+6.1f}dB")
 """
 
 TRAIN_CODE = """\
@@ -519,6 +658,7 @@ def lr_at(step):
 
 os.makedirs("/kaggle/working", exist_ok=True)
 print("INIT  test", fmt(evaluate(test_ds)))
+print("INIT  " + evaluate_dbl())
 print("(sep is the new mixture-thresholded SNR on both-active crops -- NOT comparable to v1's "
       "SI-SDR best_perm. buzz: lower is better, -30dB is the floor the loss asks for.)")
 
@@ -552,6 +692,7 @@ for epoch in range(N_EPOCHS):
     print(f"epoch {epoch+1:2d} lr={lr_at(global_step):.1e}")
     print("   val ", fmt(evaluate(val_ds)))
     print("   test", fmt(evaluate(test_ds)))
+    print("   " + evaluate_dbl())
     ckpt_path = f"/kaggle/working/{CKPT_PREFIX}_epoch{epoch+1}.pt"
     torch.save(core.state_dict(), ckpt_path)
     print(f"  saved {ckpt_path}")
@@ -566,13 +707,12 @@ NEXT_MD = """\
    and listen. Select by the real song, never by these in-domain numbers
    (five measured instances in this project of the in-domain metric
    picking the wrong checkpoint).
-3. The real question for this run: does the **non-solo buzzing** go away?
-   `buzz` falling toward -30dB in-domain is the prediction; listening to
-   the rhythm-only passages of The Sentinel is the test. Compare against
-   v1's `htd_leadrhythm_lr2e4_cont_epoch7.pt` outputs in
-   `output/stage4_local_test/`.
-4. Only if buzzing persists: then the "MoisesDB has no metal rhythm"
-   hypothesis is back on the table (more data).
+3. The real questions for this run (v3): does the **lead output** carry
+   the solos, and do **non-solo passages** of the rhythm output stay full
+   and clean, not thinned out? Compare against v2 epoch 13
+   (`sentinel_v2_ep13_*`) and v1 (`sentinel_cont_ep7_*`) in
+   `output/stage4_local_test/`. Locally, `tools/diagnose_htd_ckpt.py`
+   gives per-output numbers on any downloaded checkpoint.
 
 ## History
 
@@ -585,6 +725,9 @@ targets; they are in git history (commit 9896369 and earlier).
 """
 
 def build_cells():
+    with open(os.path.join(os.path.dirname(__file__), "dbl_rhythm_blocked_windows.json")) as f:
+        blocked = json.load(f)["blocked"]
+    split_code = SPLIT_CODE.replace("__DBL_BLOCKED__", json.dumps(blocked))
     return [
         cell(MD, INTRO_MD),
         cell(CODE, SETUP_CODE),
@@ -593,7 +736,7 @@ def build_cells():
         cell(CODE, MODEL_CODE),
         cell(CODE, LOSS_CODE),
         cell(CODE, DATASET_CODE),
-        cell(CODE, SPLIT_CODE),
+        cell(CODE, split_code),
         cell(CODE, SMOKETEST_CODE),
         cell(CODE, EVAL_CODE),
         cell(CODE, TRAIN_CODE),
