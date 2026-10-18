@@ -142,6 +142,22 @@ rhythm output's real content stayed ~20dB quiet. v3.1: warm start from
 DC + a DC penalty, silence x4 -> x2, level weight 0.5 -> 1.0, two-rhythm
 share 25% -> 10%, peak LR 1e-4, 15 epochs.
 
+## v3.2 (2026-10-18): stop the "rhythm = copy of the input" shortcut
+
+v3.1 epoch 3 is the best checkpoint so far: on The Sentinel the lead output
+beats the rhythm output during both solos (ratios 1.90 / 1.39), and the
+rhythm output is ~8dB fuller in the verse than v3 epoch 5. After that the
+rhythm output drifted into copying the input (rhythm vs mixture SI-SDR
+0 -> +13dB by epoch 5, solos included). Copying is correct whenever the lead
+rests (~40% of crops) and easy to learn. v3.2, warm-started from
+`htd_v31_epoch3.pt` (attach it as a Kaggle Dataset):
+
+- **Rhythm-side hinge:** the rhythm output must resemble the rhythm >= 3dB
+  more than the lead. This mirrors the existing lead hinge. In a static test
+  on real crops it makes copying cost ~28 loss units more than separating.
+- **Fixed leak margins (-20dB for each output)** instead of self-calibration,
+  which ran on memorised training crops and came out at -31/-35dB.
+
 ## What to watch
 
 - **`sep`** -- both-active separation, mixture-thresholded SNR (capped
@@ -149,7 +165,9 @@ share 25% -> 10%, peak LR 1e-4, 15 epochs.
 - **`role`** -- fraction of both-active crops where out0 is closer to the
   lead than to the rhythm. ~50% = not working.
 - **`leak01` / `leak10`** -- SI-SDR of each output against the WRONG
-  source, both-active crops only. Lower is better.
+  source, both-active crops only. Lower is better. **`leak10` is the copy-
+  shortcut alarm**: drifting toward 0dB means the rhythm output is turning
+  into a copy of the input.
 - **`buzz`** -- how loud an output is (dB vs the mix) when its own target
   isn't playing. This measures v1's non-solo buzzing directly: it should
   fall toward -30dB.
@@ -188,12 +206,13 @@ BATCH = 8 if USE_DP else 4   # conservative starting point -- this model is 8x t
 N_EPOCHS = 15
 LR_PEAK = 1e-4       # v3.1: fine-tuning from htd_v3_epoch5, not learning from scratch (fresh starts used 2e-4)
 GRAD_CLIP = 5.0
-CKPT_PREFIX = "htd_v31"
+CKPT_PREFIX = "htd_v32"
+RHY_HINGE_MARGIN = 3.0   # v3.2: rhythm-side hinge margin (dB), see combined_loss
 LAMBDA_SIL = 2.0     # v3.1: was 4.0. At x4 the lead output slid back to silence after epoch 5 (CLAUDE.md 2026-10-18)
 LAMBDA_LVL = 1.0     # v3.1: was 0.5; level-match term for playing sources (DC excluded), outside a +-3dB deadzone
 LVL_DEADZONE = 3.0
 DOUBLE_RHYTHM_FRAC = 0.10   # v3.1: was 0.25, which over-taught "two guitars -> all rhythm" (solos leaked into rhythm)
-INIT_CKPT = "htd_v3_epoch5.pt"   # v3.1: warm start from v3's best lead checkpoint; None = fresh from pretrained
+INIT_CKPT = "htd_v31_epoch3.pt"   # v3.2: warm start from the best checkpoint so far (Sentinel solo ratios 1.90/1.39); None = fresh
 LAMBDA_HINGE = 3.0   # Stage 2/3 found this is where routing actually gets a real gradient
 LAMBDA_LEAK = 1.0    # conservative starting weight, same philosophy as every prior leak-loss run
 LAMBDA_BAND = 0.0    # deliberately off this run -- see markdown above
@@ -376,9 +395,20 @@ def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_l
 
     q00, q01 = sisdr_flat(o0, LEAD), sisdr_flat(o0, RHYTHM)
     q10, q11 = sisdr_flat(o1, LEAD), sisdr_flat(o1, RHYTHM)
-    hinge = _mmean(F.relu(margin - (q00 - q01)), both)
+    # Lead hinge: out0 must resemble the lead >= 1dB more than the rhythm.
+    # v3.2 adds the mirror for out1 (>= RHY_HINGE_MARGIN dB more like the
+    # rhythm than the lead). Without it nothing directly opposed the "rhythm
+    # output = copy of the input" shortcut that v3/v3.1 slid into (out1 vs
+    # mixture SI-SDR went 0 -> +13dB). Static test on real crops: the copy-vs-
+    # separate gap widens from ~10 to ~27 loss units (CLAUDE.md 2026-10-18).
+    hinge = (_mmean(F.relu(margin - (q00 - q01)), both)
+             + _mmean(F.relu(RHY_HINGE_MARGIN - (q11 - q10)), both))
     if lambda_leak > 0 and leak_margin is not None:
-        leak = (_mmean(F.relu(q01 - leak_margin), both) + _mmean(F.relu(q10 - leak_margin), both)) / 2
+        # v3.2: one margin per output. v3.1 used min(leak01, leak10) - 2 for BOTH,
+        # i.e. the clean lead output's -35dB imposed on the rhythm output too
+        # (which started at -11dB), so its leak penalty was large and permanent.
+        m01, m10 = leak_margin if isinstance(leak_margin, tuple) else (leak_margin, leak_margin)
+        leak = (_mmean(F.relu(q01 - m01), both) + _mmean(F.relu(q10 - m10), both)) / 2
     else:
         leak = torch.zeros((), device=est.device)
 
@@ -409,7 +439,7 @@ def combined_loss(est, MIX, LEAD, RHYTHM, margin=1.0, leak_margin=None, lambda_l
 
 def leak_baseline(model, dataset, n=20):
     \"\"\"Self-calibrate LEAK_MARGIN from the model's own init leakage on
-    both-active crops (margin = min(baseline leak01, leak10) - 2dB).\"\"\"
+    both-active crops: (baseline leak01 - 2dB, baseline leak10 - 2dB), one per output.\"\"\"
     model.eval()
     l01, l10, k = 0.0, 0.0, 0
     with torch.no_grad():
@@ -420,7 +450,7 @@ def leak_baseline(model, dataset, n=20):
             if m["n_both"].item() > 0:
                 l01 += m["leak01"].item(); l10 += m["leak10"].item(); k += 1
     model.train()
-    return min(l01 / n, l10 / n) - 2.0
+    return (l01 / n - 2.0, l10 / n - 2.0)
 """
 
 DATASET_CODE = """\
@@ -593,8 +623,13 @@ SMOKETEST_CODE = """\
 # real run (standing discipline since Stage 0's OOM). With AMP, the first 3-4
 # steps are usually skipped while GradScaler calibrates, so identical-looking
 # loss values here are expected (Stage 3 Update 5), not a dead optimizer.
-LEAK_MARGIN = leak_baseline(model, train_ds, n=10)
-print(f"self-calibrated LEAK_MARGIN: {LEAK_MARGIN:.2f}dB")
+# v3.2: fixed leak margins. Self-calibrating on TRAINING crops gave -31/-35dB
+# for v3.1 epoch 3 although its held-out leak is ~-8dB: the model has partly
+# memorised the training songs, so the margin came out unrealistically strict
+# and the leak term penalised even good separation. -20dB ~ 10% amplitude bleed.
+LEAK_MARGIN = (-20.0, -20.0)
+_cal = leak_baseline(model, train_ds, n=10)
+print(f"LEAK_MARGIN (fixed): {LEAK_MARGIN}  | train-crop leak, info only: {_cal[0]+2:.1f}dB, {_cal[1]+2:.1f}dB")
 
 opt = torch.optim.Adam(model.parameters(), lr=LR_PEAK)
 scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))

@@ -45,9 +45,16 @@ def main(paths):
     crops = [ds.sample_batch(1) for _ in range(N_CROPS)]
     model = build_leadrhythm_htdemucs()[0].eval()
     print(f"test songs: {[s['song'] for s in ds.songs]}  crops={N_CROPS}")
+    # Reference: what "rhythm output = copy of the input mixture" would score on
+    # these same crops. A checkpoint close to this has learned the copy shortcut.
+    b_q, b_leak = [], []
+    for mix, lead, rhy in crops:
+        if db(lead[0], mix[0]) > -20 and db(rhy[0], mix[0]) > -20:
+            b_q.append(sisdr(mix[0], rhy[0])); b_leak.append(sisdr(mix[0], lead[0]))
+    print(f"{'[copy-the-mixture reference]':40s} out1->rhythm {np.mean(b_q):6.1f}dB  out1->lead (leak10) {np.mean(b_leak):6.1f}dB")
     for p in paths:
         model.load_state_dict(torch.load(p, map_location="cpu"))
-        perm, role, g0, g1, buzz, q0, q1 = [], [], [], [], [], [], []
+        perm, role, g0, g1, buzz, q0, q1, cm, lk = [], [], [], [], [], [], [], [], []
         with torch.no_grad():
             for mix, lead, rhy in crops:
                 out = model(mix)[0]
@@ -59,11 +66,13 @@ def main(paths):
                     perm.append(max(same, swap)); role.append(sisdr(o0, L) > sisdr(o0, R))
                     g0.append(db(o0, L)); g1.append(db(o1, R))
                     q0.append(sisdr(o0, L)); q1.append(sisdr(o1, R))
+                    cm.append(sisdr(o1, mix[0])); lk.append(sisdr(o1, L))
                 if not on_l: buzz.append(max(db(o0, mix[0]), -60))
                 if not on_r: buzz.append(max(db(o1, mix[0]), -60))
         f = lambda v: f"{np.mean(v):6.1f}" if v else "   nan"
         print(f"{os.path.basename(p):40s} SI-SDR best-perm {f(perm)}dB (out0->lead {f(q0)}, out1->rhythm {f(q1)})  role {np.mean(role):.2f}  "
-              f"out-vs-target level: out0 {f(g0)}dB out1 {f(g1)}dB  buzz {f(buzz)}dB(n={len(buzz)})  [both-active n={len(perm)}]")
+              f"out-vs-target level: out0 {f(g0)}dB out1 {f(g1)}dB  buzz {f(buzz)}dB(n={len(buzz)})  [both-active n={len(perm)}]\n"
+              f"{'':40s} out1 vs MIXTURE {f(cm)}dB  out1->lead (leak10) {f(lk)}dB")
 
 
 if __name__ == "__main__":

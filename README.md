@@ -121,7 +121,11 @@ silent outside them. The rhythm output is clean in non-solo passages but
 still lets the solos bleed through. There's also some buzzing, and its real
 guitar content came out too quiet because of a loss bug (see "DC" below).
 v3.1, warm-started from that checkpoint with the bug fixed and the loss
-rebalanced, is the current run.
+rebalanced, improved on it by measurement at epoch 3. On "The Sentinel" the
+lead output is louder than the rhythm output during both solos for the
+first time, and the rhythm output is about 8dB fuller in non-solo passages.
+After that the rhythm output drifted into copying the input. v3.2 adds a
+loss term against that and warm-starts from v3.1 epoch 3.
 
 MoisesDB is licensed CC BY-NC-SA 4.0, so models trained on it are for
 non-commercial use only.
@@ -177,40 +181,44 @@ compromise.
   rhythm → output 1). Otherwise "rhythm in the lead slot" would score just
   as well, and nothing would teach routing in non-solo passages.
 
-**4. Routing hinge**, both guitars playing, weight 3.0:
+**4. Routing hinges**, both guitars playing, weight 3.0:
 
-    max(0, 1dB - (SI-SDR(out0, lead) - SI-SDR(out0, rhythm)))
+    max(0, 1dB - (SI-SDR(out0, lead)   - SI-SDR(out0, rhythm)))
+  + max(0, 3dB - (SI-SDR(out1, rhythm) - SI-SDR(out1, lead)))
 
-This is the term that actually teaches "output 0 is the lead". It pushes
-output 0 to resemble the lead at least 1dB more than it resembles the
-rhythm. It's bounded: once that holds, it contributes nothing and stops
-fighting the reconstruction terms.
+The first term teaches "output 0 is the lead": output 0 must resemble the
+lead at least 1dB more than the rhythm. The second is the mirror for output
+1, added in v3.2. Without it the rhythm output drifted into simply copying
+the input. That's the right answer whenever the lead rests (about 40% of
+crops), and copying is the easiest thing a network can learn. Both terms are
+bounded: once they hold, they contribute nothing.
 
 **5. Leak penalty**, both guitars playing, weight 1.0:
 
     max(0, SI-SDR(out0, rhythm) - m) + max(0, SI-SDR(out1, lead) - m)
 
 This penalises each output for containing the *other* guitar, which is the
-bleed you hear. The margin `m` is calibrated from the starting model's own
-leakage minus 2dB, so the term only pushes for improvement and switches
-off once it's achieved.
+bleed you hear. The margin `m` is fixed at -20dB, roughly 10% amplitude
+bleed. Earlier versions calibrated it from the model's leakage on training
+crops. The model had partly memorised those, so the margin came out far too
+strict (-35dB) and the term punished even good separation.
 
 **Total:** `reconstruction-or-silence (averaged over both outputs) + 3.0 * hinge + 1.0 * leak`
 
-### Hyperparameters (v3.1) and why
+### Hyperparameters (v3.2) and why
 
 | Setting | Value | Why |
 |---|---|---|
 | Sample rate / crop | 44.1kHz stereo, 4s | HTDemucs's native rate; no resampling, no bandwidth ceiling |
 | Batch | 8 (4 per GPU, 2× T4) | Fits Kaggle's free GPUs with mixed precision |
 | Steps / epochs | 200 per epoch, 15 epochs | Data is cropped on the fly, so an "epoch" is just a reporting interval |
-| Peak learning rate | 1e-4 | Fine-tuning from v3 epoch 5. Fresh starts used 2e-4: 1e-4 stalled, 5e-4 diverged |
+| Peak learning rate | 1e-4 | Fine-tuning from the best previous checkpoint. Fresh starts used 2e-4: 1e-4 stalled, 5e-4 diverged |
 | LR schedule | 1-epoch linear warmup, cosine decay to 5% | A flat 2e-4 hit NaN twice around epochs 5-8 |
 | Gradient clipping | norm 5.0 | Extra insurance against those divergences |
 | Silence weight | 2.0 | 4.0 made a quiet lead output the safe bet (see above) |
 | Level weight / deadzone | 1.0, ±3dB | Keeps outputs at the right loudness without being a second content score |
-| Hinge weight / margin | 3.0, 1dB | Weaker weights didn't move routing in earlier experiments |
-| Leak weight / margin | 1.0, self-calibrated | Bounded, so it can't trade away fidelity indefinitely |
+| Hinge weight / margins | 3.0; 1dB (lead), 3dB (rhythm) | Weaker weights didn't move routing in earlier experiments; the rhythm hinge counters the copy-the-input shortcut |
+| Leak weight / margin | 1.0, -20dB for each output | Bounded, so it can't trade away fidelity indefinitely; fixed because self-calibration was fooled by memorised training crops |
 | "Playing" threshold | -20dB vs mixture | Below this, a track counts as resting: bleed or amp hiss, not playing |
 | Two-rhythm share | 10% of crops | 25% over-taught "two guitars → all rhythm", so solos leaked into the rhythm output |
 | Overlap bias | 70% of crops centred where both guitars play | Simultaneous playing is the hard case; the other 30% teaches silence and solo-only passages |
