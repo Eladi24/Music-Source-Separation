@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import sys
+from fractions import Fraction
 
 import numpy as np
 import soundfile as sf
@@ -83,14 +84,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--stem", default="output/04 - The Sentinel/guitar.wav")
-    ap.add_argument("--chunk-sec", type=float, default=4.0,
-                     help="inference chunk length -- model trained on 4s segments")
+    ap.add_argument("--chunk-sec", type=float, default=7.8,
+                     help="inference chunk length. Default 7.8s = HTDemucs's native window (no padding); "
+                          "the user preferred it by ear over padded 4s chunks on v5 ep12 (CLAUDE.md 2026-10-19). "
+                          "Shorter chunks are zero-padded to 7.8s unless --match-train-segment is set")
     ap.add_argument("--out-prefix", default=None)
+    ap.add_argument("--match-train-segment", action="store_true",
+                     help="set the model's internal window to --chunk-sec, as in training. HTDemucs sets "
+                          "segment = input length in train mode (no padding), but a freshly loaded model keeps "
+                          "its pretrained 7.8s window and zero-pads shorter chunks to it at inference "
+                          "(CLAUDE.md 2026-10-19)")
     a = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device {device}")
     model = build_model(a.ckpt, device)
+    if a.match_train_segment:
+        core = model.base if hasattr(model, "base") else model
+        core.segment = Fraction(int(round(a.chunk_sec * SR)), SR)
+        print(f"  model segment set to {float(core.segment):.2f}s (no padding)")
     audio = load_stereo(a.stem)
     print(f"  stem: {a.stem}  {audio.shape[1]/SR:.1f}s  stereo")
 

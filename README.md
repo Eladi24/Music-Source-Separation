@@ -134,20 +134,38 @@ lead output is mixed: good on "Your Light", especially the outro solo, and
 weak on "Hot Blooded". On all three songs the rhythm output carries the
 whole solo.
 
-**Next (v4a, built, not yet run):** instead of another loss term, the
-rhythm output is computed as *input minus lead output*. Copying the input
-then requires silencing the lead, which the loss punishes whenever a solo
-plays.
+v4a computed the rhythm output as *input minus lead output*. It didn't
+help: the rhythm track can only be as clean as the lead estimate, and on
+new songs the lead estimate was poor. That pointed at the real problem: the
+model scored far better on its 14 training songs than on new ones. Every
+loss or structure change had only moved where the error landed.
 
-Two problems remain open:
+**v5: cross-song remixing.** Half the training crops pair one song's lead
+track with another song's rhythm track (mostly key-matched, listening-
+approved), the way Demucs itself is trained. This is the first real
+progress on real songs: on "The Sentinel" the rhythm track is "much more
+clear, no noises", and on "Your Light" both tracks are the best yet, with
+very weak bleed. Running the model on its native 7.8-second window, rather
+than 4-second chunks padded with silence, removes most moments where the
+solo vanishes from the lead track and sounds best by ear.
 
-- **The lead bleeds into the rhythm track during solos.** v4a targets this.
-- **The solo gets swallowed when the solo passes from one guitarist to the
-  other, and during twin leads.** We suspected the labels (each MoisesDB
-  track is labelled lead or rhythm as a whole). Blind listening tests mostly
-  ruled that out: heard together with the other guitar, the track labels
-  were mostly right. Whether a part is lead depends on what plays under it,
-  so the role classifier, which hears one track alone, can't relabel them.
+**Next (v5.1, built, not yet run):** train on 7.8-second crops so training
+matches that inference, and evaluate on a fixed set of crops (earlier
+per-epoch numbers jumped 3-5dB from random crop choice alone).
+
+Open problems:
+
+- **Bleed at specific moments:** a few seconds where the solo jumps into the
+  rhythm track, often at a handoff between guitarists.
+- **Twin leads** (both guitars soloing) bleed into the rhythm track. The
+  training data has almost none.
+- **"Hot Blooded"** still separates poorly by ear.
+
+Earlier we suspected the role labels (each MoisesDB track is labelled lead
+or rhythm as a whole). Blind listening tests mostly ruled that out: heard
+together with the other guitar, the labels were mostly right. Whether a part
+is lead depends on what plays under it, so a classifier that hears one track
+alone can't relabel them.
 
 MoisesDB is licensed CC BY-NC-SA 4.0, so models trained on it are for
 non-commercial use only.
@@ -227,13 +245,17 @@ strict (-35dB) and the term punished even good separation.
 
 **Total:** `reconstruction-or-silence (averaged over both outputs) + 3.0 * hinge + 1.0 * leak`
 
-### Hyperparameters (v4a) and why
+### Hyperparameters (v5.1) and why
 
 | Setting | Value | Why |
 |---|---|---|
-| Rhythm output | Input minus lead output (v4a) | Three loss-only fixes couldn't stop the rhythm output copying the input; this makes copying require a silent lead. The inherited lead head was phase-inverted, so the sign is measured and stored at warm start |
-| Sample rate / crop | 44.1kHz stereo, 4s | HTDemucs's native rate; no resampling, no bandwidth ceiling |
-| Batch | 8 (4 per GPU, 2× T4) | Fits Kaggle's free GPUs with mixed precision |
+| Outputs | Two independent outputs | v4a's rhythm = input minus lead didn't help (the rhythm can only be as clean as the lead estimate) |
+| Training data | 50% cross-song remixes, 40% original song pairs, 10% two-rhythm songs | The model memorised its 14 songs; remixing turns 14 pairs into hundreds of combinations |
+| Remix pairing | 75% key-matched (random among the 8 best of 64 candidates, skipping same-note pairs), 25% random | Matching on exact notes buried the lead under a rhythm part playing the same note |
+| Remix level | Lead vs rhythm drawn from ±6dB | Both parts always play, so setting levels per part is safe |
+| Sample rate / crop | 44.1kHz stereo, 7.8s | HTDemucs's native rate and window: no resampling, no padding, so training matches inference |
+| Batch | 4 (2 per GPU, 2× T4) | 7.8s crops need about twice the memory of 4s |
+| Evaluation | Fixed crops: 40 test, 40 validation, 24 training, 16 two-rhythm | Random per-epoch crops made scores jump 3-5dB between epochs |
 | Steps / epochs | 200 per epoch, 15 epochs | Data is cropped on the fly, so an "epoch" is just a reporting interval |
 | Peak learning rate | 1e-4 | Fine-tuning from the best previous checkpoint. Fresh starts used 2e-4: 1e-4 stalled, 5e-4 diverged |
 | LR schedule | 1-epoch linear warmup, cosine decay to 5% | A flat 2e-4 hit NaN twice around epochs 5-8 |
@@ -244,7 +266,7 @@ strict (-35dB) and the term punished even good separation.
 | Leak weight / margin | 1.0, -20dB for each output | Bounded, so it can't trade away fidelity indefinitely; fixed because self-calibration was fooled by memorised training crops |
 | "Playing" threshold | -20dB vs mixture | Below this, a track counts as resting: bleed or amp hiss, not playing |
 | Two-rhythm share | 10% of crops | 25% over-taught "two guitars → all rhythm", so solos leaked into the rhythm output |
-| Overlap bias | 70% of crops centred where both guitars play | Simultaneous playing is the hard case; the other 30% teaches silence and solo-only passages |
+| Overlap bias | 70% of original-pair crops centred where both guitars play | Simultaneous playing is the hard case; the other 30% teaches silence and solo-only passages |
 | Gain | One shared gain per crop, mixture RMS 0.1 | Normalising each track separately boosted a resting track's amp hiss 40-90dB into a full-loudness target, the root cause of the original buzzing |
 
 ### Reproducing
@@ -257,6 +279,8 @@ strict (-35dB) and the term punished even good separation.
   quality and level, on held-out songs.
 - `tools/realsong_test_stereo.py` runs a checkpoint on a real song for
   listening.
+- `tools/remix_windows.py` lists which windows of each track can be used in
+  cross-song remixes (the lead must sound like lead on its own).
 - `tools/timeline_outputs.py` scores real-song outputs against solo windows
   marked by ear: how much the lead output rises in the solos, and how much
   of the solo the rhythm output carries.

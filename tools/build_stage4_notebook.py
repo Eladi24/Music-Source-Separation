@@ -198,6 +198,50 @@ Local tools (`tools/realsong_test_stereo.py`, `tools/diagnose_htd_ckpt.py`)
 load these checkpoints via `load_leadrhythm_checkpoint`, which recognises
 the `lead_sign` key.
 
+## v5 (2026-10-19): cross-song remix augmentation
+
+v4a ran 11 epochs and no epoch beat v3.2's starting point. More telling:
+across v3, v3.1, v3.2 and v4a, held-out lead quality stayed at about -6 to -9dB
+SI-SDR, while on training songs the same model scores +1.5dB (warm start,
+measured). Leak shows the same gap: -31 / -11.7dB on training crops vs -23 /
+-1.5dB on test. Each loss or structure change only moved where the error
+lands. That's too little variety (14 song pairs), not the loss.
+
+v5 = v3.2 (two independent outputs, same loss, LR, epochs, warm start) +
+**cross-song remixes**: one training song's lead track over another training
+song's rhythm track, as Demucs itself is trained. 50% of crops are remixes
+(75% key-matched by pitch-class profile, 25% random), 40% original pairs, 10%
+two-rhythm. Remix lead crops only use windows where the lead track sounds
+like lead on its own; rhythm crops avoid lead-sounding moments
+(`tools/remix_windows.py`). Lead-vs-rhythm level is drawn from +-6dB.
+Validation and test are unchanged, so the numbers compare directly with v3.2.
+Listening-approved 2026-10-19.
+
+New per-epoch **`train`** line: the same metrics on training songs (original
+pairs). The bet is that the train-vs-test gap narrows.
+
+## v5.1 (2026-10-19): native 7.8s crops, fixed evaluation crops
+
+v5 epoch 12 is the best checkpoint of the project on all three real songs
+(by measurement; by ear on The Sentinel and Your Light). What's left is
+momentary misrouting at solo handoffs: for a few seconds the solo goes to the
+rhythm output and vanishes from the lead output.
+
+- **7.8s crops** (was 4s). HTDemucs sets its window to the input length in
+  training, so v5 trained on 4s. Inference with 7.8s chunks removed the
+  handoff dropouts but made separation less decisive, plausibly because the
+  model had never trained on that much context. 7.8s is the pretrained
+  model's native window, so training and inference now match with no
+  padding. ~2x memory per crop: batch 8 -> 4.
+- **Fixed evaluation crops** (40 test, 40 val, 24 train, 16 two-rhythm),
+  drawn once with a fixed seed and reused every epoch. v5's lines used 6-16
+  fresh random crops and jumped 3-5dB between epochs.
+- **"Never Say Never" out of validation** (labels unreliable by ear).
+  Validation is "Darkest Heart" alone; training songs are unchanged.
+- Warm start from `htd_v5_epoch12.pt`. Everything else as v5.
+- Local real-song tests of v5.1 checkpoints: `tools/realsong_test_stereo.py
+  --chunk-sec 7.8`.
+
 ## What to watch
 
 - **`sep`** -- both-active separation, mixture-thresholded SNR (capped
@@ -240,20 +284,31 @@ import torch.nn.functional as F
 import soundfile as sf
 
 SR = 44100
-SEG_SEC = 4.0
+SEG_SEC = 7.8   # v5.1: HTDemucs's native window (was 4.0). See the v5.1 markdown
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 USE_DP = torch.cuda.device_count() > 1
-BATCH = 8 if USE_DP else 4   # conservative starting point -- this model is 8x the ConvTasNet's size
+BATCH = 4 if USE_DP else 2   # v5.1: was 8/4 at 4s crops; 7.8s crops need ~2x memory per crop
 N_EPOCHS = 15
 LR_PEAK = 1e-4       # v3.1: fine-tuning from htd_v3_epoch5, not learning from scratch (fresh starts used 2e-4)
 GRAD_CLIP = 5.0
-CKPT_PREFIX = "htd_v4a"   # v4a: rhythm output = mix - lead (MixConsistent, model cell); otherwise identical to v3.2
+CKPT_PREFIX = "htd_v51"
+MIX_CONSISTENT = False    # v4a's rhythm = mix - lead wrapper. v4a was negative (CLAUDE.md 2026-10-19), so v5 uses v3.2's two outputs
+# v5: cross-song remix augmentation (one song's lead track over another's rhythm
+# track), the way Demucs itself is trained. Every run v3-v4a scored far better on
+# training songs than held-out ones (lead SI-SDR +1.5 vs ~-8.5dB): too little
+# variety, 14 song pairs. Listening-approved 2026-10-19 (key-matched preferred,
+# random "will still do").
+REMIX_FRAC = 0.5          # share of training crops that are cross-song remixes
+REMIX_KEYMATCH_FRAC = 0.75  # of those, rhythm = a key fit (random among the best 8 of 64, 8s context); rest random
+REMIX_GAIN_DB = 6.0       # lead-vs-rhythm level drawn uniformly from +-6dB (both sources always playing)
 RHY_HINGE_MARGIN = 3.0   # v3.2: rhythm-side hinge margin (dB), see combined_loss
 LAMBDA_SIL = 2.0     # v3.1: was 4.0. At x4 the lead output slid back to silence after epoch 5 (CLAUDE.md 2026-10-18)
 LAMBDA_LVL = 1.0     # v3.1: was 0.5; level-match term for playing sources (DC excluded), outside a +-3dB deadzone
 LVL_DEADZONE = 3.0
 DOUBLE_RHYTHM_FRAC = 0.10   # v3.1: was 0.25, which over-taught "two guitars -> all rhythm" (solos leaked into rhythm)
-INIT_CKPT = "htd_v31_epoch3.pt"   # v3.2: warm start from the best checkpoint so far (Sentinel solo ratios 1.90/1.39); None = fresh
+INIT_CKPT = "htd_v5_epoch12.pt"   # v5.1: best on all 3 real songs (CLAUDE.md 2026-10-19); None = fresh
+EVAL_SEED = 1234   # v5.1: fixed evaluation crops, drawn once (see the split cell)
+EVAL_N = {"test": 40, "val": 40, "train": 24, "dbl": 16}
 LAMBDA_HINGE = 3.0   # Stage 2/3 found this is where routing actually gets a real gradient
 LAMBDA_LEAK = 1.0    # conservative starting weight, same philosophy as every prior leak-loss run
 LAMBDA_BAND = 0.0    # deliberately off this run -- see markdown above
@@ -337,8 +392,8 @@ backbone_params = sum(p.numel() for n, p in model.named_parameters()
 head_params = sum(p.numel() for n, p in model.named_parameters()) - backbone_params
 print(f"backbone (pretrained): {backbone_params:,}  new head: {head_params:,}")
 
-model = MixConsistent(model).to(DEVICE)   # v4a
-core = model   # saved checkpoints = core.state_dict(): base.* plus lead_sign
+model = (MixConsistent(model) if MIX_CONSISTENT else model).to(DEVICE)
+core = model   # saved checkpoints = core.state_dict() (v4a: base.* plus lead_sign)
 if USE_DP:
     model = nn.DataParallel(model)
 """
@@ -621,13 +676,127 @@ def _stack(items):
 
 
 class MixedDataset:
-    \"\"\"Each crop comes from `extra` with probability `frac`, else from `main`.\"\"\"
-    def __init__(self, main, extra, frac):
-        self.main, self.extra, self.frac = main, extra, frac
+    \"\"\"Each crop comes from `extra` with probability `frac`, else from `main`.
+    `extra` can also be a list of (dataset, prob) pairs.\"\"\"
+    def __init__(self, main, extra, frac=None):
+        self.main = main
+        self.parts = extra if isinstance(extra, list) else [(extra, frac)]
+
+    def _pick(self):
+        u = random.random()
+        for ds, p in self.parts:
+            if u < p:
+                return ds
+            u -= p
+        return self.main
 
     def sample_batch(self, batch_size):
-        return _stack([(self.extra if random.random() < self.frac else self.main).sample_one()
-                       for _ in range(batch_size)])
+        return _stack([self._pick().sample_one() for _ in range(batch_size)])
+
+
+class FixedCrops:
+    \"\"\"v5.1: evaluation crops drawn ONCE with a fixed seed and reused every
+    epoch. v5's per-epoch lines used 6-16 fresh random crops, which made epochs
+    jump 3-5dB; its late "+3dB" epochs tied epoch 1 on a fixed 24-crop set
+    (CLAUDE.md 2026-10-19).\"\"\"
+    def __init__(self, dataset, n, seed):
+        rs, ns = random.getstate(), np.random.get_state()
+        random.seed(seed); np.random.seed(seed)
+        self.items = [dataset.sample_one() for _ in range(n)]
+        random.setstate(rs); np.random.set_state(ns)
+
+    def batches(self, batch_size):
+        for i in range(0, len(self.items), batch_size):
+            yield _stack(self.items[i:i + batch_size])
+
+
+def chroma12(x):
+    \"\"\"Pitch-class energy profile (80-2000Hz), unit norm. x: (T,) mono.\"\"\"
+    n = 8192
+    fr = np.abs(np.fft.rfft(x[:len(x) // n * n].reshape(-1, n) * np.hanning(n), axis=1)) ** 2
+    f = np.fft.rfftfreq(n, 1 / SR)
+    band = (f > 80) & (f < 2000)
+    pc = np.round(12 * np.log2(f[band] / 440)).astype(int) % 12
+    c = np.array([fr[:, band][:, pc == k].sum() for k in range(12)])
+    return c / (np.linalg.norm(c) + 1e-12)
+
+
+class RemixDataset:
+    \"\"\"v5: one song's lead track over a DIFFERENT song's rhythm track.
+    Lead crops: 4s where the lead track is playing and sounds like lead on its
+    own (classifier P(lead) > 0.8, REMIX_WINDOWS["lead_ok"]). Rhythm crops: 4s of
+    a rhythm track (or a two-rhythm song's track), playing, avoiding lead-
+    sounding windows. Both sources always play, so per-source level setting is
+    safe here (v1's boosting bug was about silent sources). With probability
+    REMIX_KEYMATCH_FRAC the rhythm is a key fit: random among the 8 best of 64
+    random candidates, by pitch-class profile over 8s of context around each
+    crop. Listening-approved 2026-10-19.
+    Two fixes after the first generator samples (user: "the key-matched ones
+    don't really have a lead"): (1) a lead crop is used only if the lead is
+    sounding (within 12dB of its peak) for >= 75% of it -- the per-2s-window
+    activity check let a lead that enters halfway through pass; (2) key fit on
+    the 4s crop itself matched NOTES, so a sparse lead got a rhythm part
+    playing the same note (unison masking); 8s context matches key/harmony
+    instead, and top-8-of-64 avoids the extreme matches. Even so, 32% of
+    key-matched pairs had the rhythm hammering the lead's main note, vs 14% in
+    the original song pairs and 10% in random remixes, so key-matched picks
+    now skip candidates whose crop shares the lead's dominant note (>0.6 of
+    the rhythm crop's pitch-class energy).\"\"\"
+    def __init__(self, lead_tracks, rhythm_tracks, active_thresh=0.01):
+        # *_tracks: lists of (song_key, path, allowed_or_blocked_window_set, mode)
+        self.leads, self.rhys = [], []
+        for dst, tracks in ((self.leads, lead_tracks), (self.rhys, rhythm_tracks)):
+            for key, path, wins, mode in tracks:
+                data, sr = sf.read(path, dtype="float32", always_2d=True)
+                mono = data.mean(axis=1)
+                w = int(2 * SR)
+                n = len(mono) // w
+                rms = np.array([np.sqrt(np.mean(mono[i*w:(i+1)*w] ** 2)) for i in range(n)])
+                ok = [(rms[i] > active_thresh) and ((i in wins) if mode == "allow" else (i not in wins))
+                      for i in range(n)]
+                k = int(np.ceil(SEG_SEC / 2))   # 2s windows per crop (v5.1: 4 for 7.8s crops)
+                for i in range(n - k + 1):
+                    if all(ok[i:i + k]):
+                        a, b = max(0, i - 1), min(n, i + k + 1)   # crop plus ~2s of context each side
+                        dst.append((key, path, i, chroma12(mono[a*w:b*w]), chroma12(mono[i*w:(i+k)*w])))
+        print(f"remix: {len(self.leads)} lead crops from {len({k for k,*_ in self.leads})} songs, "
+              f"{len(self.rhys)} rhythm crops from {len({k for k,*_ in self.rhys})} songs")
+
+    def _read(self, path, i):
+        x, _ = sf.read(path, dtype="float32", always_2d=True, start=int(i * 2 * SR), frames=int(SEG_SEC * SR))
+        if x.shape[0] < int(SEG_SEC * SR):
+            x = np.pad(x, ((0, int(SEG_SEC * SR) - x.shape[0]), (0, 0)))
+        return x
+
+    @staticmethod
+    def _sounding_frac(x):
+        m = x.mean(axis=1)
+        q = SR // 4
+        e = np.array([np.sqrt(np.mean(m[k*q:(k+1)*q] ** 2)) for k in range(len(m) // q)])
+        return float(np.mean(e > e.max() * 10 ** (-12 / 20)))
+
+    def sample_one(self):
+        for _try in range(20):
+            lk, lp, li, lc, ln = random.choice(self.leads)
+            lead = self._read(lp, li)
+            if self._sounding_frac(lead) >= 0.75:
+                break
+        cands = [c for c in random.sample(self.rhys, 64) if c[0] != lk]
+        if random.random() < REMIX_KEYMATCH_FRAC:
+            note = int(np.argmax(ln))
+            ok = [c for c in cands if not (int(np.argmax(c[4])) == note and c[4].max() > 0.6)] or cands
+            ok.sort(key=lambda c: float(c[3] @ lc), reverse=True)
+            rk, rp, ri = random.choice(ok[:8])[:3]
+        else:
+            rk, rp, ri = cands[0][:3]
+        rhythm = self._read(rp, ri)
+        rl, rr = np.sqrt(np.mean(lead ** 2)), np.sqrt(np.mean(rhythm ** 2))
+        lead = lead * (rr / max(rl, 1e-8)) * 10 ** (random.uniform(-REMIX_GAIN_DB, REMIX_GAIN_DB) / 20)
+        g = MIX_RMS / max(np.sqrt(np.mean((lead + rhythm) ** 2)), 1e-8)   # one gain for the pair, as elsewhere
+        peak = np.abs(lead + rhythm).max() * g
+        if peak > 0.95:
+            g *= 0.95 / peak
+        return (lead * g).T, (rhythm * g).T
 """
 
 SPLIT_CODE = """\
@@ -646,6 +815,10 @@ for s in by_overlap:
 test_ids = [s["track_id"] for s in by_overlap[0:2]]
 val_ids = [s["track_id"] for s in by_overlap[2:4]]
 train_ids = [s["track_id"] for s in by_overlap[4:]]
+# v5.1: "Never Say Never" out of validation -- the user found its labels
+# unreliable by ear (ambiguous, one control clip heard reversed). It stays out
+# of training too, so the training songs are exactly v5's.
+val_ids = [t for t in val_ids if usable[t]["song"] != "Never Say Never"]
 print(f"\\ntrain={len(train_ids)} val={len(val_ids)} test={len(test_ids)}")
 
 val_ds = MoisesLeadRhythmDataset(DATA_DIR, val_ids, usable)
@@ -671,8 +844,33 @@ assert len(dbl_eval_ids) == 2
 
 train_main = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable)
 train_dbl = MoisesLeadRhythmDataset(DATA_DIR, dbl_train_ids, dbl, double_rhythm=True, blocked=DBL_BLOCKED)
-train_ds = MixedDataset(train_main, train_dbl, DOUBLE_RHYTHM_FRAC)
+# v5: cross-song remixes from TRAINING songs only (val/test and the two-rhythm
+# eval songs never contribute). Window lists computed locally by
+# tools/remix_windows.py and embedded here.
+REMIX_WINDOWS = __REMIX_WINDOWS__
+_lead_tracks = [(usable[t]["song"], os.path.join(DATA_DIR, t, "guitar", usable[t]["lead_id"] + ".wav"),
+                 set(REMIX_WINDOWS["lead_ok"].get(t, [])), "allow") for t in train_ids]
+_rhy_tracks = [(usable[t]["song"], os.path.join(DATA_DIR, t, "guitar", usable[t]["rhythm_id"] + ".wav"),
+                set(REMIX_WINDOWS["rhythm_bad"].get(t, [])), "block") for t in train_ids]
+for t in dbl_train_ids:
+    for k in ("lead_id", "rhythm_id"):
+        _rhy_tracks.append((dbl[t]["song"], os.path.join(DATA_DIR, t, "guitar", dbl[t][k] + ".wav"),
+                            set(DBL_BLOCKED.get(t, [])), "block"))
+train_remix = RemixDataset(_lead_tracks, _rhy_tracks)
+train_ds = MixedDataset(train_main, [(train_remix, REMIX_FRAC), (train_dbl, DOUBLE_RHYTHM_FRAC)])
+print(f"training crops: {REMIX_FRAC:.0%} remix, {DOUBLE_RHYTHM_FRAC:.0%} two-rhythm, "
+      f"{1 - REMIX_FRAC - DOUBLE_RHYTHM_FRAC:.0%} original song pairs")
+
 dbl_eval_ds = MoisesLeadRhythmDataset(DATA_DIR, dbl_eval_ids, dbl, double_rhythm=True, blocked=DBL_BLOCKED)
+
+# v5.1: fixed evaluation crops (same every epoch, so epochs are comparable)
+test_fix = FixedCrops(test_ds, EVAL_N["test"], EVAL_SEED)
+val_fix = FixedCrops(val_ds, EVAL_N["val"], EVAL_SEED + 1)
+train_fix = FixedCrops(train_main, EVAL_N["train"], EVAL_SEED + 2)
+dbl_fix = FixedCrops(dbl_eval_ds, EVAL_N["dbl"], EVAL_SEED + 3)
+print(f"fixed eval crops: test {EVAL_N['test']} ({', '.join(usable[t]['song'] for t in test_ids)}), "
+      f"val {EVAL_N['val']} ({', '.join(usable[t]['song'] for t in val_ids)}), "
+      f"train {EVAL_N['train']}, two-rhythm {EVAL_N['dbl']}")
 """
 
 SMOKETEST_CODE = """\
@@ -708,7 +906,8 @@ def calibrate_lead_sign(n=12):
     if 0 < votes.count(1.0) < n and min(votes.count(1.0), votes.count(-1.0)) > n // 4:
         print("  WARNING: polarity is not consistent across crops -- mix - lead will be poor on some crops")
 
-calibrate_lead_sign()
+if MIX_CONSISTENT:
+    calibrate_lead_sign()
 _cal = leak_baseline(model, train_ds, n=10)
 print(f"LEAK_MARGIN (fixed): {LEAK_MARGIN}  | train-crop leak, info only: {_cal[0]+2:.1f}dB, {_cal[1]+2:.1f}dB")
 
@@ -745,8 +944,9 @@ def evaluate(dataset, n_batches=10, batch_size=BATCH):
            "lead_q": 0.0, "rhy_q": 0.0, "lead_lvl": 0.0, "rhy_lvl": 0.0}
     w, buzz_sum, buzz_n = 0.0, 0.0, 0
     with torch.no_grad():
-        for _ in range(n_batches):
-            mix, lead, rhythm = dataset.sample_batch(batch_size)
+        src = (dataset.batches(batch_size) if hasattr(dataset, "batches")
+               else (dataset.sample_batch(batch_size) for _ in range(n_batches)))
+        for mix, lead, rhythm in src:
             mix, lead, rhythm = mix.to(DEVICE), lead.to(DEVICE), rhythm.to(DEVICE)
             _, _, _, m = combined_loss(model(mix), mix, lead, rhythm)
             nb = m["n_both"].item()
@@ -759,6 +959,7 @@ def evaluate(dataset, n_batches=10, batch_size=BATCH):
     res = {k: v / max(w, 1) for k, v in acc.items()}
     res["buzz"] = buzz_sum / buzz_n if buzz_n else float("nan")
     res["buzz_n"] = buzz_n
+    res["n_both"] = int(w)
     return res
 
 
@@ -766,7 +967,7 @@ def fmt(r):
     return (f"sep={r['sep']:6.2f}dB role={r['role']:.2f} leak01={r['leak01']:6.1f} "
             f"leak10={r['leak10']:6.1f} buzz={r['buzz']:6.1f}dB(n={r['buzz_n']})\\n"
             f"         lead: SI-SDR={r['lead_q']:6.1f}dB level={r['lead_lvl']:+6.1f}dB | "
-            f"rhythm: SI-SDR={r['rhy_q']:6.1f}dB level={r['rhy_lvl']:+6.1f}dB")
+            f"rhythm: SI-SDR={r['rhy_q']:6.1f}dB level={r['rhy_lvl']:+6.1f}dB  [both-active n={r.get('n_both', '?')}]")
 
 
 def evaluate_dbl(n_batches=6, batch_size=BATCH):
@@ -776,8 +977,7 @@ def evaluate_dbl(n_batches=6, batch_size=BATCH):
     model.eval()
     lead_db, q, lvl = [], [], []
     with torch.no_grad():
-        for _ in range(n_batches):
-            mix, lead, rhythm = dbl_eval_ds.sample_batch(batch_size)
+        for mix, lead, rhythm in dbl_fix.batches(batch_size):   # v5.1: fixed crops
             mix, rhythm = mix.to(DEVICE), rhythm.to(DEVICE)
             out = model(mix)
             lead_db.append(level_db(out[:, 0], mix).clamp(min=-60).mean().item())
@@ -810,7 +1010,7 @@ def lr_at(step):
 
 
 os.makedirs("/kaggle/working", exist_ok=True)
-print("INIT  test", fmt(evaluate(test_ds)))
+print("INIT  test", fmt(evaluate(test_fix)))
 print("INIT  " + evaluate_dbl())
 print("(sep is the new mixture-thresholded SNR on both-active crops -- NOT comparable to v1's "
       "SI-SDR best_perm. buzz: lower is better, -30dB is the floor the loss asks for.)")
@@ -843,9 +1043,12 @@ for epoch in range(N_EPOCHS):
         break
 
     print(f"epoch {epoch+1:2d} lr={lr_at(global_step):.1e}")
-    print("   val ", fmt(evaluate(val_ds)))
-    print("   test", fmt(evaluate(test_ds)))
+    print("   val ", fmt(evaluate(val_fix)))
+    print("   test", fmt(evaluate(test_fix)))
     print("   " + evaluate_dbl())
+    # v5: the same metrics on TRAINING songs (original pairs, not remixes). The
+    # remix bet is that this train-vs-test gap narrows.
+    print("  train", fmt(evaluate(train_fix)))
     ckpt_path = f"/kaggle/working/{CKPT_PREFIX}_epoch{epoch+1}.pt"
     torch.save(core.state_dict(), ckpt_path)
     print(f"  saved {ckpt_path}")
@@ -880,7 +1083,11 @@ targets; they are in git history (commit 9896369 and earlier).
 def build_cells():
     with open(os.path.join(os.path.dirname(__file__), "dbl_rhythm_blocked_windows.json")) as f:
         blocked = json.load(f)["blocked"]
-    split_code = SPLIT_CODE.replace("__DBL_BLOCKED__", json.dumps(blocked))
+    with open(os.path.join(os.path.dirname(__file__), "remix_windows.json")) as f:
+        remix_windows = json.load(f)
+    remix_windows = {k: remix_windows[k] for k in ("lead_ok", "rhythm_bad")}
+    split_code = (SPLIT_CODE.replace("__DBL_BLOCKED__", json.dumps(blocked))
+                  .replace("__REMIX_WINDOWS__", json.dumps(remix_windows)))
     return [
         cell(MD, INTRO_MD),
         cell(CODE, SETUP_CODE),
