@@ -125,17 +125,29 @@ rebalanced, measured better at epoch 3: on "The Sentinel" the lead output
 is louder than the rhythm output during both solos, and the rhythm output
 is about 8dB fuller in non-solo passages. By ear, though, it sounds about
 the same as v3 epoch 5. After epoch 3 the rhythm output drifted into
-copying the input. v3.2 adds a loss term against that and warm-starts from
-v3.1 epoch 3.
+copying the input. v3.2 added a loss term against that, and after 15 epochs
+no checkpoint beat its starting point: it was the third run in a row to
+drift toward "rhythm output = the whole input, lead output quiet".
+
+Tested on two more songs ("Hot Blooded" by Foreigner, and "Your Light"), the
+lead output is mixed: good on "Your Light", especially the outro solo, and
+weak on "Hot Blooded". On all three songs the rhythm output carries the
+whole solo.
+
+**Next (v4a, built, not yet run):** instead of another loss term, the
+rhythm output is computed as *input minus lead output*. Copying the input
+then requires silencing the lead, which the loss punishes whenever a solo
+plays.
 
 Two problems remain open:
 
-- **The lead bleeds into the rhythm track during solos.** v3.2 targets this.
+- **The lead bleeds into the rhythm track during solos.** v4a targets this.
 - **The solo gets swallowed when the solo passes from one guitarist to the
-  other, and during twin leads.** The likely cause is in the labels: each
-  MoisesDB track is labelled lead or rhythm as a whole, but about a quarter
-  of what's labelled "lead" is the lead guitarist playing rhythm. The
-  planned fix is labelling roles per 2-second window instead of per track.
+  other, and during twin leads.** We suspected the labels (each MoisesDB
+  track is labelled lead or rhythm as a whole). Blind listening tests mostly
+  ruled that out: heard together with the other guitar, the track labels
+  were mostly right. Whether a part is lead depends on what plays under it,
+  so the role classifier, which hears one track alone, can't relabel them.
 
 MoisesDB is licensed CC BY-NC-SA 4.0, so models trained on it are for
 non-commercial use only.
@@ -215,10 +227,11 @@ strict (-35dB) and the term punished even good separation.
 
 **Total:** `reconstruction-or-silence (averaged over both outputs) + 3.0 * hinge + 1.0 * leak`
 
-### Hyperparameters (v3.2) and why
+### Hyperparameters (v4a) and why
 
 | Setting | Value | Why |
 |---|---|---|
+| Rhythm output | Input minus lead output (v4a) | Three loss-only fixes couldn't stop the rhythm output copying the input; this makes copying require a silent lead. The inherited lead head was phase-inverted, so the sign is measured and stored at warm start |
 | Sample rate / crop | 44.1kHz stereo, 4s | HTDemucs's native rate; no resampling, no bandwidth ceiling |
 | Batch | 8 (4 per GPU, 2× T4) | Fits Kaggle's free GPUs with mixed precision |
 | Steps / epochs | 200 per epoch, 15 epochs | Data is cropped on the fly, so an "epoch" is just a reporting interval |
@@ -244,6 +257,9 @@ strict (-35dB) and the term punished even good separation.
   quality and level, on held-out songs.
 - `tools/realsong_test_stereo.py` runs a checkpoint on a real song for
   listening.
+- `tools/timeline_outputs.py` scores real-song outputs against solo windows
+  marked by ear: how much the lead output rises in the solos, and how much
+  of the solo the rhythm output carries.
 
 The most important lesson so far: numbers measured on the training
 material have picked the wrong checkpoint many times. Checkpoints are chosen

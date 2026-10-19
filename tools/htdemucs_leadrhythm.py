@@ -43,6 +43,45 @@ def build_leadrhythm_htdemucs(sources=("lead", "rhythm")):
     return model, bag
 
 
+class MixConsistent(nn.Module):
+    """v4a (2026-10-19): rhythm output = input mixture - lead output.
+
+    v3, v3.1 and v3.2 all drifted into "rhythm output = copy of the input,
+    lead output quiet" (CLAUDE.md 2026-10-19). With the rhythm output defined
+    as the remainder, copying the input is only possible by silencing the
+    lead, which the lead loss punishes whenever a solo plays, and a timid
+    (too quiet) lead now shows up as solo left in the rhythm output, so the
+    rhythm loss punishes it too. The base model's second head channel is unused.
+
+    `lead_sign`: the v3/v3.1 lead head outputs the lead polarity-inverted on
+    100% of measured crops (SI-SDR and the level term are both sign-blind, so
+    nothing ever fixed it). Without correcting it, rhythm = mix + lead at warm
+    start. It's a buffer, so checkpoints carry it."""
+
+    def __init__(self, base, lead_sign=1.0):
+        super().__init__()
+        self.base = base
+        self.register_buffer("lead_sign", torch.tensor(float(lead_sign)))
+
+    def forward(self, mix):
+        lead = self.lead_sign * self.base(mix)[:, 0]
+        return torch.stack([lead, mix - lead], dim=1)
+
+
+def load_leadrhythm_checkpoint(path):
+    """Loads a Stage 4 checkpoint, plain (v1-v3.2) or MixConsistent (v4a+,
+    recognised by its `lead_sign` key). Returns the model in eval mode."""
+    sd = torch.load(path, map_location="cpu")
+    base, _ = build_leadrhythm_htdemucs()
+    if "lead_sign" in sd:
+        model = MixConsistent(base)
+        model.load_state_dict(sd)
+    else:
+        base.load_state_dict(sd)
+        model = base
+    return model.eval()
+
+
 def count_params(model):
     backbone = sum(p.numel() for n, p in model.named_parameters()
                    if "decoder.3.conv_tr" not in n and "tdecoder.3.conv_tr" not in n)

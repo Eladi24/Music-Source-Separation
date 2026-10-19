@@ -22,7 +22,7 @@ import soundfile as sf
 import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
-from htdemucs_leadrhythm import build_leadrhythm_htdemucs
+from htdemucs_leadrhythm import load_leadrhythm_checkpoint
 
 SR = 44100
 TIPTON_SOLO, DOWNING_SOLO = (141.0, 146.0), (147.0, 151.0)
@@ -41,9 +41,7 @@ def write_stereo(path, x, sr=SR):
 
 
 def build_model(ckpt_path, device):
-    model, _bag = build_leadrhythm_htdemucs()
-    sd = torch.load(ckpt_path, map_location="cpu")
-    model.load_state_dict(sd)
+    model = load_leadrhythm_checkpoint(ckpt_path)   # plain or v4a MixConsistent
     model.to(device).eval()
     n = sum(p.numel() for p in model.parameters())
     print(f"  model: {n:,} params, loaded {ckpt_path}")

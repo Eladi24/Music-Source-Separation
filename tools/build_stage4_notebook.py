@@ -158,6 +158,46 @@ rests (~40% of crops) and easy to learn. v3.2, warm-started from
 - **Fixed leak margins (-20dB for each output)** instead of self-calibration,
   which ran on memorised training crops and came out at -31/-35dB.
 
+## v4a (2026-10-19): rhythm output = input - lead output
+
+v3.2 ran 15 epochs and no epoch beat its starting point. It was the third
+run in a row (v3, v3.1, v3.2) to drift into "rhythm output = copy of the
+input, lead output quiet", despite three different loss fixes. On real songs
+(The Sentinel, Hot Blooded, Your Light) the rhythm output carries the whole
+solo. Measured why the v3.2 rhythm hinge couldn't stop it: on 46% of
+both-active training crops, copying the input already passes the hinge for
+free.
+
+v4a changes the structure instead of the loss: **the rhythm output is
+computed as `mix - lead`** (`MixConsistent` in the model cell). Copying the
+input now requires silencing the lead, which the lead loss punishes whenever
+a solo plays, and a too-quiet lead leaves solo in the rhythm output, so the
+rhythm loss punishes that too. Everything else is identical to v3.2 (data,
+losses, LR, epochs, warm start from `htd_v31_epoch3.pt`), so any change in
+behaviour is this one change. The data is unchanged, so there's no
+listening gate.
+
+**Lead polarity.** The v3/v3.1 lead head outputs the lead **phase-inverted
+on 100% of measured crops** (both checkpoints, train and test songs): the
+losses are sign-blind, so nothing ever fixed it. Uncorrected, the warm start
+would give rhythm = mix + lead. The smoke-test cell measures the sign on
+training crops and stores it in the wrapper (`lead_sign`, saved with the
+checkpoint).
+
+**Expect a bad-looking INIT line.** Before training, the inherited lead
+output is ~16dB too quiet, so mix - lead is nearly a copy of the input
+(measured on 24 test crops: rhythm level +3.4dB, leak10 0.0dB, rhythm vs
+mixture 18.4dB). v4a starts AT the copy state; what changed is that the loss
+now punishes it twice (lead too quiet, and solo left in the rhythm output).
+**What to watch:** the lead level climbing toward 0dB and leak10 falling.
+Judge epochs against v3.2's INIT (leak10 -8.3, lead SI-SDR -5.8, role 0.81),
+the best starting point the old structure had, not against this run's own
+INIT, which is easy to beat.
+
+Local tools (`tools/realsong_test_stereo.py`, `tools/diagnose_htd_ckpt.py`)
+load these checkpoints via `load_leadrhythm_checkpoint`, which recognises
+the `lead_sign` key.
+
 ## What to watch
 
 - **`sep`** -- both-active separation, mixture-thresholded SNR (capped
@@ -167,7 +207,8 @@ rests (~40% of crops) and easy to learn. v3.2, warm-started from
 - **`leak01` / `leak10`** -- SI-SDR of each output against the WRONG
   source, both-active crops only. Lower is better. **`leak10` is the copy-
   shortcut alarm**: drifting toward 0dB means the rhythm output is turning
-  into a copy of the input.
+  into a copy of the input. In v4a the rhythm output is mix - lead, so a
+  high `leak10` there means the lead output is missing part of the solo.
 - **`buzz`** -- how loud an output is (dB vs the mix) when its own target
   isn't playing. This measures v1's non-solo buzzing directly: it should
   fall toward -30dB.
@@ -206,7 +247,7 @@ BATCH = 8 if USE_DP else 4   # conservative starting point -- this model is 8x t
 N_EPOCHS = 15
 LR_PEAK = 1e-4       # v3.1: fine-tuning from htd_v3_epoch5, not learning from scratch (fresh starts used 2e-4)
 GRAD_CLIP = 5.0
-CKPT_PREFIX = "htd_v32"
+CKPT_PREFIX = "htd_v4a"   # v4a: rhythm output = mix - lead (MixConsistent, model cell); otherwise identical to v3.2
 RHY_HINGE_MARGIN = 3.0   # v3.2: rhythm-side hinge margin (dB), see combined_loss
 LAMBDA_SIL = 2.0     # v3.1: was 4.0. At x4 the lead output slid back to silence after epoch 5 (CLAUDE.md 2026-10-18)
 LAMBDA_LVL = 1.0     # v3.1: was 0.5; level-match term for playing sources (DC excluded), outside a +-3dB deadzone
@@ -266,6 +307,22 @@ def build_leadrhythm_htdemucs(sources=("lead", "rhythm")):
     return model
 
 
+class MixConsistent(nn.Module):
+    \"\"\"v4a: rhythm output = input mixture - lead output (see the markdown at
+    the top). Copying the input now requires silencing the lead. lead_sign
+    corrects the inherited lead head's inverted polarity; it is measured in
+    the smoke-test cell and saved with the checkpoint. Same class as
+    tools/htdemucs_leadrhythm.py, which local tools use to load these.\"\"\"
+    def __init__(self, base, lead_sign=1.0):
+        super().__init__()
+        self.base = base
+        self.register_buffer("lead_sign", torch.tensor(float(lead_sign)))
+
+    def forward(self, mix):
+        lead = self.lead_sign * self.base(mix)[:, 0]
+        return torch.stack([lead, mix - lead], dim=1)
+
+
 model = build_leadrhythm_htdemucs()
 if INIT_CKPT:
     # Upload the checkpoint as a private Kaggle Dataset and attach it (+ Add Input);
@@ -280,8 +337,8 @@ backbone_params = sum(p.numel() for n, p in model.named_parameters()
 head_params = sum(p.numel() for n, p in model.named_parameters()) - backbone_params
 print(f"backbone (pretrained): {backbone_params:,}  new head: {head_params:,}")
 
-model = model.to(DEVICE)
-core = model
+model = MixConsistent(model).to(DEVICE)   # v4a
+core = model   # saved checkpoints = core.state_dict(): base.* plus lead_sign
 if USE_DP:
     model = nn.DataParallel(model)
 """
@@ -628,6 +685,30 @@ SMOKETEST_CODE = """\
 # memorised the training songs, so the margin came out unrealistically strict
 # and the leak term penalised even good separation. -20dB ~ 10% amplitude bleed.
 LEAK_MARGIN = (-20.0, -20.0)
+
+# v4a: measure the inherited lead head's polarity on training crops where the
+# lead plays, and store it in the wrapper. v3/v3.1 output the lead inverted on
+# 100% of measured crops; uncorrected, rhythm = mix - lead would be mix + lead.
+def calibrate_lead_sign(n=12):
+    core.lead_sign.fill_(1.0)
+    core.eval()
+    votes = []
+    with torch.no_grad():
+        while len(votes) < n:
+            mix, lead, _ = train_main.sample_batch(1)
+            mix, lead = mix.to(DEVICE), lead.to(DEVICE)
+            if level_db(lead, mix).item() <= ACTIVE_DB:
+                continue
+            e, r = _zm(_flat(core(mix)[:, 0])), _zm(_flat(lead))
+            votes.append(1.0 if (e * r).sum().item() > 0 else -1.0)
+    core.train()
+    sign = 1.0 if sum(votes) >= 0 else -1.0
+    core.lead_sign.fill_(sign)
+    print(f"lead polarity votes: +{votes.count(1.0)} / -{votes.count(-1.0)}  -> lead_sign = {sign:+.0f}")
+    if 0 < votes.count(1.0) < n and min(votes.count(1.0), votes.count(-1.0)) > n // 4:
+        print("  WARNING: polarity is not consistent across crops -- mix - lead will be poor on some crops")
+
+calibrate_lead_sign()
 _cal = leak_baseline(model, train_ds, n=10)
 print(f"LEAK_MARGIN (fixed): {LEAK_MARGIN}  | train-crop leak, info only: {_cal[0]+2:.1f}dB, {_cal[1]+2:.1f}dB")
 
@@ -779,10 +860,10 @@ NEXT_MD = """\
    and listen. Select by the real song, never by these in-domain numbers
    (five measured instances in this project of the in-domain metric
    picking the wrong checkpoint).
-3. The real questions for this run (v3): does the **lead output** carry
-   the solos, and do **non-solo passages** of the rhythm output stay full
-   and clean, not thinned out? Compare against v2 epoch 13
-   (`sentinel_v2_ep13_*`) and v1 (`sentinel_cont_ep7_*`) in
+3. The real question for this run (v4a): does the **rhythm output stop
+   carrying the solos** (on The Sentinel, Hot Blooded and Your Light,
+   scored with `tools/timeline_outputs.py --solo ...`), without the lead
+   output going quiet? Compare against v3 epoch 5 / v3.1 epoch 3 outputs in
    `output/stage4_local_test/`. Locally, `tools/diagnose_htd_ckpt.py`
    gives per-output numbers on any downloaded checkpoint.
 

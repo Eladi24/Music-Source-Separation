@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
-from htdemucs_leadrhythm import build_leadrhythm_htdemucs  # noqa: E402
+from htdemucs_leadrhythm import load_leadrhythm_checkpoint  # noqa: E402
 from moisesdb_dataset import MoisesLeadRhythmDataset  # noqa: E402
 
 DATA = "output/moisesdb_guitar"
@@ -43,7 +43,6 @@ def main(paths):
     ds = MoisesLeadRhythmDataset(DATA, test_ids, overlap_bias=0.7)
     random.seed(0); np.random.seed(0)
     crops = [ds.sample_batch(1) for _ in range(N_CROPS)]
-    model = build_leadrhythm_htdemucs()[0].eval()
     print(f"test songs: {[s['song'] for s in ds.songs]}  crops={N_CROPS}")
     # Reference: what "rhythm output = copy of the input mixture" would score on
     # these same crops. A checkpoint close to this has learned the copy shortcut.
@@ -53,7 +52,7 @@ def main(paths):
             b_q.append(sisdr(mix[0], rhy[0])); b_leak.append(sisdr(mix[0], lead[0]))
     print(f"{'[copy-the-mixture reference]':40s} out1->rhythm {np.mean(b_q):6.1f}dB  out1->lead (leak10) {np.mean(b_leak):6.1f}dB")
     for p in paths:
-        model.load_state_dict(torch.load(p, map_location="cpu"))
+        model = load_leadrhythm_checkpoint(p)   # plain or v4a MixConsistent
         perm, role, g0, g1, buzz, q0, q1, cm, lk = [], [], [], [], [], [], [], [], []
         with torch.no_grad():
             for mix, lead, rhy in crops:
