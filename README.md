@@ -149,9 +149,36 @@ very weak bleed. Running the model on its native 7.8-second window, rather
 than 4-second chunks padded with silence, removes most moments where the
 solo vanishes from the lead track and sounds best by ear.
 
-**Next (v5.1, built, not yet run):** train on 7.8-second crops so training
-matches that inference, and evaluate on a fixed set of crops (earlier
-per-epoch numbers jumped 3-5dB from random crop choice alone).
+v5.1 trained on 7.8-second crops and evaluated on a fixed set of crops
+(earlier per-epoch numbers jumped 3-5dB from random crop choice alone). It
+tied v5 by ear, so v5 epoch 12 stays the reference model.
+
+**The biggest remaining loss is the input.** Real songs reach the model as a
+guitar stem that Demucs extracted from the finished mix: bleed from other
+instruments, separation artifacts, extra guitar parts. Training only ever used
+clean guitar tracks. On two held-out songs, the same model loses 6-10dB when
+fed the Demucs-extracted stem instead of the clean tracks.
+
+**Training on the Demucs input didn't help (v6, v6a).** v6 trained partly on
+Demucs-extracted inputs, added other-instrument bleed to remixed crops, and
+added lead material from 82 more MoisesDB songs. v6a kept only the Demucs
+inputs. Neither improved held-out songs fed the Demucs stem, and both swung
+back and forth between "quiet lead, solo in the rhythm track" and the reverse.
+
+An oracle test explains why. The best possible mask applied to the Demucs
+stem recovers the lead at 6.6dB and the rhythm at 5.7dB, against about 13dB
+from the clean tracks: Demucs has already thrown the rest away. The model
+already loses no more than that, so there was little to gain by training,
+and some training examples asked for audio the input no longer contains.
+
+**So the gap is in the guitar extraction, not in the lead/rhythm model.**
+On the same windows, BS-Roformer SW (a community model, currently the best
+on MVSep's guitar benchmark) extracts the guitar much more faithfully than
+htdemucs_6s: 7.8 vs 5.4dB to the true guitars, oracle lead 9.0 vs 6.6dB,
+better in over 90% of windows. Two caveats: its training data is unknown
+and may include MoisesDB, and its weights have no stated licence. **Next:**
+listen to the lead/rhythm model fed Roformer stems of The Sentinel, Your
+Light and Hot Blooded, songs outside every dataset.
 
 Open problems:
 
@@ -160,6 +187,8 @@ Open problems:
 - **Twin leads** (both guitars soloing) bleed into the rhythm track. The
   training data has almost none.
 - **"Hot Blooded"** still separates poorly by ear.
+- **Real-song input:** the Demucs-extracted guitar stem has lost part of the
+  guitar before the model sees it (see above).
 
 Earlier we suspected the role labels (each MoisesDB track is labelled lead
 or rhythm as a whole). Blind listening tests mostly ruled that out: heard
@@ -281,6 +310,16 @@ strict (-35dB) and the term punished even good separation.
   listening.
 - `tools/remix_windows.py` lists which windows of each track can be used in
   cross-song remixes (the lead must sound like lead on its own).
+- `tools/input_mismatch_test.py` scores a checkpoint on held-out songs fed
+  three ways: clean lead + rhythm, all guitar tracks, and the Demucs-extracted
+  guitar of the full mix.
+- `tools/pull_moisesdb_stems.py` and `tools/demucs_guitar_inputs.py` rebuild
+  each pair song's full mix and its htdemucs_6s guitar stem (the v6 input).
+- `tools/oracle_demucs_input.py` measures how much of the lead and rhythm can
+  still be recovered from an extracted guitar stem (best possible mask).
+- `tools/roformer_vs_demucs.py` compares BS-Roformer SW with htdemucs_6s as
+  the guitar extractor on those windows; `tools/roformer_guitar_stem.py`
+  extracts a whole song's guitar with it (ONNX, CPU, ~7x song length).
 - `tools/timeline_outputs.py` scores real-song outputs against solo windows
   marked by ear: how much the lead output rises in the solos, and how much
   of the solo the rhythm output carries.

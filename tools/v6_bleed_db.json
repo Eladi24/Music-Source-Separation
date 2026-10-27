@@ -1,0 +1,36 @@
+{
+ "bleed_db": [
+  -21.2,
+  -5.2
+ ],
+ "median": -12.5,
+ "artifacts_median": -5.2,
+ "n_windows": 2413,
+ "per_song_bleed_median": {
+  "Fight The Feeling": -10.5,
+  "The First Noel": -13.2,
+  "Mr Know It All": -16.7,
+  "Thriller": -14.6,
+  "We Wish You A Merry Christmas": -13.5,
+  "Lifeboat": -15.2,
+  "Robs Song": -14.6,
+  "Auld Lang Syne": -12.9,
+  "Stand Up": -16.2,
+  "Old Friends": -13.2,
+  "Hark The Herald Angels Sing": -17.3,
+  "Away In A Manger": -13.7,
+  "Reach Out": -7.3,
+  "Good King Wenceslas": -16.1,
+  "Crystal Observatory": -4.3,
+  "Ghetto In My Heart": -7.0,
+  "Standin' On My Own Two Feet": -16.4,
+  "Silver Screen": -13.3,
+  "Panic!": -14.7,
+  "Is It All On Me": -8.8,
+  "Broken": -7.8,
+  "Below": -11.6,
+  "Song For Anyone": -1.6,
+  "Songbird": -4.0,
+  "Can I Get A Minute": -8.3
+ }
+}

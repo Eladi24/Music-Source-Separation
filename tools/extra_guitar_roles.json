@@ -1,0 +1,792 @@
+{
+ "9653a690-c28c-4e8f-962e-ff7ed18b8ee9": {
+  "0348bf4c-6b45-4480-826f-62cc6663e46a": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.9264705882352942,
+   "p_lead": 0.07979442924261093,
+   "use": "rhythm_extra"
+  },
+  "2cec450a-1dca-409f-8dc9-efca2a289bce": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.6617647058823529,
+   "p_lead": 0.20375730097293854,
+   "use": "rhythm"
+  },
+  "1d835071-b5bc-41e4-ba73-c5f737441b2c": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.25735294117647056,
+   "p_lead": 0.9982714056968689,
+   "use": "lead"
+  }
+ },
+ "3c3b5fdb-f15e-4ba4-884a-b083ce2426c6": {
+  "a7522bdb-9727-4dee-94d0-a5cc9c43b457": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.967032967032967,
+   "p_lead": 0.0005572172813117504,
+   "use": "rhythm"
+  },
+  "d2af889e-23c5-4e2b-95df-344f0cbbd3bf": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.5274725274725275,
+   "p_lead": 0.23042871057987213,
+   "use": "lead"
+  }
+ },
+ "ef1510e0-ba23-4b59-ba53-14181d73f213": {
+  "684bdb53-2e08-44c7-a5de-1bd0f0d4b7bd": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9294117647058824,
+   "p_lead": 0.014126516878604889,
+   "use": "rhythm"
+  },
+  "b9d1e137-703f-414c-b265-68d4f18ccfd0": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.12941176470588237,
+   "p_lead": 0.43878373503685,
+   "use": "lead"
+  }
+ },
+ "04204031-4f98-44ba-9c47-98c2f2e6b8fc": {
+  "548a1d61-c1ee-4b30-b699-d61f3f7bcf18": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.06756756756756757,
+   "p_lead": 0.029285728931427002,
+   "use": "lead"
+  },
+  "867884f6-9d76-40d6-888e-5eb837509464": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.8783783783783784,
+   "p_lead": 0.0019037247402593493,
+   "use": "rhythm"
+  }
+ },
+ "ea29ab4d-7f72-4331-b2a4-d3945c754211": {
+  "2c72842f-97b1-4063-aa8a-c0baf99fb7c3": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9871794871794872,
+   "p_lead": 0.0005925959558226168,
+   "use": "rhythm"
+  },
+  "4a764bf0-b245-42fb-b73b-899616600ba3": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.5769230769230769,
+   "p_lead": 0.06624072045087814,
+   "use": "lead"
+  }
+ },
+ "6ceda40a-88bc-4e98-87c3-dd5c91725d41": {
+  "80896a5b-a89f-48cf-a9cc-b93b2bfc1fde": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.8611111111111112,
+   "p_lead": 0.09095630049705505,
+   "use": "rhythm_extra"
+  },
+  "4afa939e-d1c6-4b4b-8303-d88dfc1280ba": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.20689655172413793,
+   "p_lead": 0.9632439017295837,
+   "use": "block"
+  },
+  "d0164ab9-26a9-4f29-80a8-811d5baa1e9e": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.5069444444444444,
+   "p_lead": 0.6274504661560059,
+   "use": "rhythm"
+  },
+  "93d58df2-0020-4a40-8e44-fc1a40d208ce": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.5172413793103449,
+   "p_lead": 0.9653347730636597,
+   "use": "lead"
+  },
+  "b0ef90ff-b4ab-4056-92e3-7b08741c59ed": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.12413793103448276,
+   "p_lead": 0.858738124370575,
+   "use": "block"
+  }
+ },
+ "ed7576a1-2fed-4736-8368-74ac347a0718": {
+  "959c73c3-4b85-4dc1-b469-53df20e9c01e": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.5234899328859061,
+   "p_lead": 0.29768887162208557,
+   "use": "lead"
+  },
+  "f06c02d5-9f4e-4c5d-829a-cf678c83f155": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9798657718120806,
+   "p_lead": 0.0007098790956661105,
+   "use": "rhythm"
+  }
+ },
+ "825f697d-5fcd-4429-ba33-23163c726ca7": {
+  "2355162c-13f3-45e0-ba1a-9d9afd92fd9f": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9885057471264368,
+   "p_lead": 0.003214156487956643,
+   "use": "rhythm"
+  },
+  "8cc312a6-49cc-428e-aa3f-d0886b152bb9": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.2413793103448276,
+   "p_lead": 0.6096010804176331,
+   "use": "lead"
+  }
+ },
+ "6ce087b4-e571-4472-9be2-04b5340311c6": {
+  "7f09191b-b906-4414-ab64-f373a83bddfa": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.6203703703703703,
+   "p_lead": 0.0008501271368004382,
+   "use": "rhythm_extra"
+  },
+  "d2102881-9f4b-4894-9ae6-cebaf85fd006": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.37037037037037035,
+   "p_lead": 0.9468091726303101,
+   "use": "lead"
+  },
+  "f869ae5e-54a9-4205-97c0-d764f3122381": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.7037037037037037,
+   "p_lead": 0.34237807989120483,
+   "use": "rhythm"
+  }
+ },
+ "88b545e5-4d06-4d55-a306-1bd3a2915ee5": {
+  "52f90bb3-5e6d-43c8-a4ea-7d24dce31b24": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.21311475409836064,
+   "p_lead": 0.5860770344734192,
+   "use": "lead"
+  },
+  "135f070c-3ef3-48de-ad2e-e2c916af545f": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9836065573770492,
+   "p_lead": 0.00012631333083845675,
+   "use": "rhythm"
+  }
+ },
+ "c70471f9-9c4a-41c9-b8f8-20ac38847a8e": {
+  "e28635d3-3148-40eb-b36d-c771b7a4de45": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.9851851851851852,
+   "p_lead": 0.12711277604103088,
+   "use": "rhythm_extra"
+  },
+  "d45e68cb-b2ce-4c38-ba00-421afdf21e62": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.2074074074074074,
+   "p_lead": 0.08661537617444992,
+   "use": "rhythm_extra"
+  },
+  "df574252-34db-480c-a179-8340d572c05f": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.35555555555555557,
+   "p_lead": 0.8312203884124756,
+   "use": "lead"
+  },
+  "37f72978-d441-43ad-9df3-416b5a6d8e52": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.32592592592592595,
+   "p_lead": 0.22673240303993225,
+   "use": "rhythm"
+  }
+ },
+ "bbf40b5a-8ef9-4aec-a6c3-8b8706eb2ba0": {
+  "f6653759-067b-4255-b7da-828378b60e56": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.8414634146341463,
+   "p_lead": 0.0021018122788518667,
+   "use": "rhythm"
+  },
+  "064aa517-e8a8-4c81-a9e7-33c5e5a83a6b": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.36585365853658536,
+   "p_lead": 0.13563227653503418,
+   "use": "lead"
+  },
+  "24b61c33-c3da-4e70-984d-436a439671b2": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.14634146341463414,
+   "p_lead": 0.17496128380298615,
+   "use": "rhythm_extra"
+  }
+ },
+ "0d528a19-cb0f-4421-b250-444f9343e51c": {
+  "9517b60d-9f82-4ede-bb37-bf2e878b240f": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.20454545454545456,
+   "p_lead": 0.02558003179728985,
+   "use": "rhythm_extra"
+  },
+  "3eadd83e-6c34-4220-bc84-761ab5b96af0": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.7272727272727273,
+   "p_lead": 0.000800873851403594,
+   "use": "rhythm"
+  },
+  "8d9f7f6f-8b2d-4b31-a3bd-02b691a7ff1c": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.29545454545454547,
+   "p_lead": 0.04178859665989876,
+   "use": "lead"
+  }
+ },
+ "4999a0bf-a753-4e0e-85b1-690259dabf96": {
+  "4ea44891-d98d-486c-ad7c-3e371cb70c75": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.4339622641509434,
+   "p_lead": 0.03384200483560562,
+   "use": "rhythm"
+  },
+  "189e0534-5e05-494d-a74a-3a4f701636ad": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.1320754716981132,
+   "p_lead": 0.16456328332424164,
+   "use": "lead"
+  }
+ },
+ "046ab651-a333-46e1-9d27-ab14ee036c42": {
+  "e323d2cd-6fc4-4e59-8fc8-6c7aac7cea1b": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9431818181818182,
+   "p_lead": 0.016860878095030785,
+   "use": "rhythm"
+  },
+  "1ce47ce6-1b86-4cca-a2f7-a2986edfe1eb": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.8181818181818182,
+   "p_lead": 0.16720522940158844,
+   "use": "lead"
+  }
+ },
+ "d4df499c-e394-4753-b459-e167e6a58bad": {
+  "e9b5da4b-c94b-46c8-8bb9-3bc196b295ed": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.12222222222222222,
+   "p_lead": 0.955983579158783,
+   "use": "block"
+  },
+  "c2aae766-8e55-4367-a93a-3fb7c05efcb4": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.0,
+   "p_lead": null,
+   "use": "rhythm_extra"
+  },
+  "c4dacf6e-e04c-4706-8623-a4d91a7a83ee": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.6777777777777778,
+   "p_lead": 0.007445992901921272,
+   "use": "rhythm"
+  },
+  "13a8dfe2-8580-4df9-93e8-4112bd81752d": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.08888888888888889,
+   "p_lead": 0.9741785526275635,
+   "use": "lead"
+  },
+  "046f424b-1abd-416f-b9ae-d5d69cad46dd": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.2222222222222222,
+   "p_lead": 0.014626352116465569,
+   "use": "rhythm_extra"
+  },
+  "db2cb189-973b-45af-8ca1-59cbf086a5aa": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.2222222222222222,
+   "p_lead": 0.4997268319129944,
+   "use": "block"
+  }
+ },
+ "89c515c9-5e93-4cb4-9806-20432d2d074d": {
+  "b83a7c1a-12cc-462d-970c-9a4c5ac3153f": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.9692307692307692,
+   "p_lead": 0.0021912178490310907,
+   "use": "rhythm_extra"
+  },
+  "132c05ef-28b5-4b1d-84c6-a76b3fb18d1b": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.27692307692307694,
+   "p_lead": 0.80661940574646,
+   "use": "lead"
+  },
+  "82207b14-873f-49bb-be33-71b83357021f": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.7076923076923077,
+   "p_lead": 0.1659408062696457,
+   "use": "rhythm"
+  }
+ },
+ "22d265ef-ee2b-4aba-8d60-c3430295cd6d": {
+  "2c06f765-909b-4e81-9f66-57bc9be5116b": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.9509803921568627,
+   "p_lead": 0.00032221118453890085,
+   "use": "rhythm_extra"
+  },
+  "54cb1db0-01a3-41db-92eb-0844b03366d7": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.2549019607843137,
+   "p_lead": 0.3278667628765106,
+   "use": "lead"
+  },
+  "b198e5a2-b646-4c1c-841e-15b3c0a97eb7": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9509803921568627,
+   "p_lead": 0.003464131848886609,
+   "use": "rhythm"
+  }
+ },
+ "afca84b2-0277-4b1b-8696-5f14543f338c": {
+  "f33a2a0a-5156-4011-bf91-0fffda5f9878": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.9152542372881356,
+   "p_lead": 0.012493263930082321,
+   "use": "rhythm_extra"
+  },
+  "f7c3da37-82af-466e-a57c-50ba702a5d8d": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.4067796610169492,
+   "p_lead": 0.17595665156841278,
+   "use": "lead"
+  },
+  "f3862933-1931-4cf2-ae42-991191c8d7af": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9322033898305084,
+   "p_lead": 0.003383841598406434,
+   "use": "rhythm"
+  }
+ },
+ "0a589d65-50a3-4999-8f16-b5b6199bceee": {
+  "afe7b067-4d8e-4798-aa95-543ac768b520": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.4793388429752066,
+   "p_lead": 0.04225892201066017,
+   "use": "rhythm_extra"
+  },
+  "ced6df58-ab5b-4f31-bfe0-63041b21630e": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.4462809917355372,
+   "p_lead": 0.008316156454384327,
+   "use": "rhythm_extra"
+  },
+  "4b5dc0f9-d4c6-4648-b567-2f9418b856e0": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.049586776859504134,
+   "p_lead": 0.05580079182982445,
+   "use": "rhythm_extra"
+  },
+  "38916e38-6f9d-4492-8825-e43a892a3a72": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.5206611570247934,
+   "p_lead": 0.5496945977210999,
+   "use": "lead"
+  },
+  "be6457dc-9b84-4bdd-921e-6f64a508309c": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.2396694214876033,
+   "p_lead": 0.2569997012615204,
+   "use": "rhythm"
+  },
+  "beeb61c9-0aba-4c73-bda1-608120cf8d67": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.2727272727272727,
+   "p_lead": 0.3945758640766144,
+   "use": "block"
+  },
+  "a5a25559-12b6-4d41-840e-a022bff5fa9e": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.35537190082644626,
+   "p_lead": 0.48858532309532166,
+   "use": "block"
+  }
+ },
+ "8804c154-6294-481a-ad63-bc61162cae2f": {
+  "6fcabbbd-dd4e-4f10-b5f0-00bb32b25364": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.9541284403669725,
+   "p_lead": 0.007747102063149214,
+   "use": "rhythm_extra"
+  },
+  "0d334d1a-49be-4839-85ea-6dfed4989a97": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.8073394495412844,
+   "p_lead": 0.014996984042227268,
+   "use": "rhythm_extra"
+  },
+  "5b65d873-6076-4c37-94f1-773b73ed1cd2": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.46788990825688076,
+   "p_lead": 0.8600163459777832,
+   "use": "lead"
+  },
+  "34f91e02-a912-4b35-b1b5-b3619170a6c0": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.3577981651376147,
+   "p_lead": 0.4434943199157715,
+   "use": "rhythm"
+  }
+ },
+ "3e389000-8fdc-4b63-b8b8-ab044273790d": {
+  "56c3347d-f8f1-4f2c-be5b-da5b0deb2ff7": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.5175438596491229,
+   "p_lead": 0.10627333074808121,
+   "use": "rhythm_extra"
+  },
+  "4d291a7d-d1e9-47c0-ac9e-81bb5c6a7a02": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.45614035087719296,
+   "p_lead": 0.19192011654376984,
+   "use": "rhythm_extra"
+  },
+  "ab273319-4417-471f-be0b-efe8728fa6ef": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.5263157894736842,
+   "p_lead": 0.34712496399879456,
+   "use": "block"
+  },
+  "092e670c-dede-4d99-96ef-9d318262504c": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.17543859649122806,
+   "p_lead": 0.9848003387451172,
+   "use": "lead"
+  },
+  "2e8adf61-c792-44e5-a8db-2de9530bc10f": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.23684210526315788,
+   "p_lead": 0.2090102881193161,
+   "use": "rhythm"
+  }
+ },
+ "93dda0e8-dd76-49e4-b08f-54a82387cdf6": {
+  "0741ba39-00e1-4347-a3b9-806cfb193f20": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.30392156862745096,
+   "p_lead": 0.00028063918580301106,
+   "use": "rhythm"
+  },
+  "7b87172c-311a-4adc-817e-08ca0cf8d417": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.29411764705882354,
+   "p_lead": 0.6736132502555847,
+   "use": "lead"
+  },
+  "729e8994-d5d7-40f1-b339-c666b81e54e4": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.5784313725490197,
+   "p_lead": 0.9999594688415527,
+   "use": "block"
+  },
+  "4d6de58d-bbe1-4c62-8398-f68d22718636": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.058823529411764705,
+   "p_lead": 0.9999973177909851,
+   "use": "block"
+  },
+  "96cde1c6-6d83-402b-baba-b1b57dc6f46a": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.13725490196078433,
+   "p_lead": 0.8441888093948364,
+   "use": "block"
+  },
+  "3faa40e8-a84c-46c9-a7f5-55c7de30b9b2": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.0,
+   "p_lead": null,
+   "use": "rhythm_extra"
+  },
+  "10e0e302-a03b-41a8-b7e1-47576439a33b": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.27450980392156865,
+   "p_lead": 0.999997079372406,
+   "use": "block"
+  }
+ },
+ "35983cdd-3903-46cb-b184-f96274ced57b": {
+  "e84815dd-0c25-4175-85a1-d94bb2b2cdb0": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.7075471698113207,
+   "p_lead": 0.016618581488728523,
+   "use": "rhythm"
+  },
+  "2e051ff7-0648-48cf-8a51-76e4c0de4fef": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.20754716981132076,
+   "p_lead": 0.3822963833808899,
+   "use": "lead"
+  }
+ },
+ "731893c6-67b9-42f0-aea6-d1f70c2c9870": {
+  "a0ad70fd-7200-42f9-83c7-4f88fce63aa0": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.28205128205128205,
+   "p_lead": 0.0018214653246104717,
+   "use": "rhythm_extra"
+  },
+  "641d31e3-3947-4f78-a91a-8c0e9b026e4d": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.17094017094017094,
+   "p_lead": 0.028401929885149002,
+   "use": "rhythm_extra"
+  },
+  "5644d4cf-4ff5-4636-ac32-830ec991ecd2": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.24786324786324787,
+   "p_lead": 0.4980370104312897,
+   "use": "block"
+  },
+  "8226eb64-dc9c-4c77-b2c1-a5a06334c44b": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.6495726495726496,
+   "p_lead": 0.002875495934858918,
+   "use": "rhythm"
+  },
+  "db6c7491-5b08-4875-8b69-4e169ff85b02": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.6495726495726496,
+   "p_lead": 7.807775546098128e-05,
+   "use": "rhythm_extra"
+  },
+  "a6857906-5c6e-4292-9370-25736b779b2f": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.5555555555555556,
+   "p_lead": 0.40796107053756714,
+   "use": "block"
+  },
+  "76ffecbc-53db-42de-a66b-63f36493b8d5": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.18803418803418803,
+   "p_lead": 0.8838745355606079,
+   "use": "lead"
+  }
+ },
+ "04798708-6915-4dbc-842e-d394d545d4eb": {
+  "6ef40a3c-2d98-4ad4-adac-f61832e728c2": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9117647058823529,
+   "p_lead": 0.03672761470079422,
+   "use": "rhythm"
+  },
+  "7d65d554-6890-4cfa-bc9a-f35bf427dc83": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.10784313725490197,
+   "p_lead": 0.19458156824111938,
+   "use": "lead"
+  }
+ },
+ "045dcfd1-e960-4332-80cc-fdacc4a7c6a7": {
+  "32d12c00-72de-4534-b60c-8277461b10fc": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.9431818181818182,
+   "p_lead": 0.0005818316130898893,
+   "use": "rhythm"
+  },
+  "15e63fc8-b461-4add-989b-ee1ca71dc3c4": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.3068181818181818,
+   "p_lead": 0.5551382899284363,
+   "use": "lead"
+  }
+ },
+ "7bfa233c-24ed-4c7a-9096-11e3aa00c55d": {
+  "072220bf-4206-4a9d-a9b6-390fd8f0d442": {
+   "role": "extra",
+   "type": "acoustic_guitar",
+   "active": 0.23717948717948717,
+   "p_lead": 0.006005785893648863,
+   "use": "rhythm_extra"
+  },
+  "c1b04171-bbb4-4838-8aa0-d375832ec583": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.1346153846153846,
+   "p_lead": 0.17397816479206085,
+   "use": "rhythm"
+  },
+  "ef8b34e0-327e-4006-ada7-87ed1bbc9a4c": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.11538461538461539,
+   "p_lead": 0.9102089405059814,
+   "use": "lead"
+  }
+ },
+ "92ba4404-76ff-4523-a787-652057e06c13": {
+  "700e7d52-186e-49bd-bdce-25f5fb168955": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.11594202898550725,
+   "p_lead": 0.843239963054657,
+   "use": "lead"
+  },
+  "ca6927ee-1f47-4f7b-aec4-a7d62dbf280d": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.2898550724637681,
+   "p_lead": 0.0011261103209108114,
+   "use": "rhythm"
+  }
+ },
+ "e1108928-9776-434c-bc57-c32dfdb7839c": {
+  "6ab87e93-49a6-46f8-b93a-f104598fb77e": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.776,
+   "p_lead": 0.0063746836967766285,
+   "use": "lead"
+  },
+  "0a80ee9a-1cd9-4122-a94a-49aaf11a3ae8": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.736,
+   "p_lead": 0.0013342942111194134,
+   "use": "rhythm"
+  }
+ },
+ "2dc237cd-1637-46f0-8f58-ca68dc6f6031": {
+  "194d8054-34a9-4ee6-8740-b3b9224f6eb7": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.3655913978494624,
+   "p_lead": 0.011335870251059532,
+   "use": "rhythm_extra"
+  },
+  "8c3a20e2-dc35-4a8b-be6f-3a7ce0ee950a": {
+   "role": "extra",
+   "type": "clean_electric_guitar",
+   "active": 0.08602150537634409,
+   "p_lead": 0.9575211405754089,
+   "use": "block"
+  },
+  "a09f8ce4-2deb-40ff-a347-e433cefae246": {
+   "role": "RHY",
+   "type": "distorted_electric_guitar",
+   "active": 0.967741935483871,
+   "p_lead": 0.002105913357809186,
+   "use": "rhythm"
+  },
+  "ad0529ff-efa0-489d-858f-198860cdd3a3": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.7419354838709677,
+   "p_lead": 0.010847246274352074,
+   "use": "rhythm_extra"
+  },
+  "9835a4b9-4a51-4650-bf14-9beda5ffa5dc": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.3763440860215054,
+   "p_lead": 0.00026084406999871135,
+   "use": "rhythm_extra"
+  },
+  "ec7a8220-4a39-46de-ad80-25bc3c50f22a": {
+   "role": "extra",
+   "type": "distorted_electric_guitar",
+   "active": 0.3118279569892473,
+   "p_lead": 0.016613170504570007,
+   "use": "rhythm_extra"
+  },
+  "8b7b57f6-ba3e-4d08-bd06-8d8749c44936": {
+   "role": "LEAD",
+   "type": "distorted_electric_guitar",
+   "active": 0.27956989247311825,
+   "p_lead": 0.7276896834373474,
+   "use": "lead"
+  }
+ }
+}

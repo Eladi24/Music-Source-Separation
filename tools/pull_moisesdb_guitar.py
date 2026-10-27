@@ -9,6 +9,9 @@ only the ~6.07GB of actually-needed audio is transferred, not the full
 
 Usage:
     python tools/pull_moisesdb_guitar.py "<presigned URL>" --out output/moisesdb_guitar
+    # 2026-10-19: the 82 songs with exactly ONE distorted guitar (more lead /
+    # rhythm material for cross-song remixing):
+    python tools/pull_moisesdb_guitar.py "<presigned URL>" --n-distorted 1 --out output/moisesdb_guitar_single
 """
 import argparse
 import io
@@ -23,7 +26,7 @@ from remote_zip_metadata import HTTPRangeFile
 ROOT_PREFIX = "moisesdb/moisesdb_v0.1/"
 
 
-def find_qualifying_tracks(zf):
+def find_qualifying_tracks(zf, n_distorted="2+"):
     """Returns list of dicts: {track_id, artist, song, genre, tracks: [...]}"""
     names = zf.namelist()
     data_json_names = [n for n in names if n.endswith("/data.json") and n.startswith(ROOT_PREFIX)]
@@ -40,7 +43,7 @@ def find_qualifying_tracks(zf):
                 guitar_tracks.append(t)
                 if t.get("trackType", "").strip().lower() == "distorted_electric_guitar":
                     n_dist += 1
-        if n_dist >= 2:
+        if (n_dist >= 2) if n_distorted == "2+" else (n_dist == int(n_distorted)):
             qualifying.append({
                 "track_id": track_id,
                 "artist": data.get("artist"),
@@ -56,14 +59,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("url")
     ap.add_argument("--out", default="output/moisesdb_guitar")
+    ap.add_argument("--n-distorted", default="2+", help='"2+" (lead/rhythm pairs) or an exact count, e.g. "1"')
     args = ap.parse_args()
 
     f = HTTPRangeFile(args.url)
     print(f"Remote object size: {f.size/1e9:.1f} GB")
     zf = zipfile.ZipFile(f)
 
-    qualifying = find_qualifying_tracks(zf)
-    print(f"{len(qualifying)} qualifying songs (>=2 distorted electric guitar sources)")
+    qualifying = find_qualifying_tracks(zf, args.n_distorted)
+    print(f"{len(qualifying)} qualifying songs ({args.n_distorted} distorted electric guitar sources)")
 
     os.makedirs(args.out, exist_ok=True)
     manifest = {"songs": qualifying}

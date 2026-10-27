@@ -242,6 +242,58 @@ rhythm output and vanishes from the lead output.
 - Local real-song tests of v5.1 checkpoints: `tools/realsong_test_stereo.py
   --chunk-sec 7.8`.
 
+## v6 (2026-10-23): train on the real-song input
+
+v5 epoch 12 is the reference (by ear: The Sentinel's rhythm track "much more
+clear, no noises", Your Light "best results so far"). v5.1 (7.8s crops) tied
+it. The biggest measured loss left is the **input**: real songs reach the
+model as a guitar stem that htdemucs_6s extracted from a full mix, but every
+run so far trained on clean tracks. On two held-out MoisesDB songs, that input
+alone costs 6-10dB of lead/rhythm SI-SDR, more than any training change has
+ever moved (input-mismatch test, CLAUDE.md 2026-10-19). v6 = v5.1 plus:
+
+1. **Demucs-extracted inputs.** For each of the 31 pair songs, the full mix
+   (all stems) was run through htdemucs_6s locally, as the app does
+   (`moisesdb_stems.zip`). Half of the original-pair and two-rhythm crops
+   use that as the INPUT; targets stay the true tracks. The Demucs stem holds
+   every guitar in the song: accompaniment-like extra tracks (acoustic, clean
+   comping) join the rhythm target, and windows where a lead-like extra plays
+   are skipped (`tools/extra_guitar_roles.py`).
+2. **More remix material.** The 82 MoisesDB songs with one distorted guitar
+   (`moisesdb_guitar_single.zip`): confident lead and rhythm windows join the
+   remix pool. The test songs' artists are left out (`EXCLUDE_TEST_ARTISTS`).
+3. **Other-instrument bleed** on half the remix inputs: real drums / bass /
+   vocals / keys stems from the training songs, at the level Demucs's own
+   guitar stems leak (measured, `BLEED_DB`). Targets stay clean.
+
+Warm start `htd_v51_epoch5.pt` (7.8s crops). Attach FOUR inputs: the
+moisesdb_guitar dataset, moisesdb_guitar_single, moisesdb_stems, and the
+checkpoint. Listening-approved before this run, per the hard gate.
+
+**The new line to watch is `tdmx`**: the test songs through the Demucs input.
+Download a checkpoint only if `tdmx` clearly beats its INIT and `test` (clean
+input) doesn't fall apart.
+
+## v6a (2026-10-27): one change at a time
+
+v6 was negative: in 6 epochs `tdmx` never beat its INIT (lead 1.0 -> -5.5dB),
+clean `test` fell (lead 3.8 -> 0.5), and epochs see-sawed between strong
+two-rhythm behaviour with a collapsed lead on Demucs input (ep3/ep5) and the
+reverse (ep4), ending in copy-shortcut drift (ep6 leak10 -12.7). Three changes
+were bundled, so v6a keeps only the central one:
+
+- Demucs input on **half the original-pair crops only** (`DEMUCS_INPUT_FRAC`).
+- Two-rhythm crops back to clean input (`DBL_DEMUCS_FRAC = 0`).
+- No bleed augmentation (`BLEED_FRAC = 0`), no single-guitar songs
+  (`USE_SINGLE_GUITAR = False`): the remix pool is v5.1's again.
+
+Same warm start (`htd_v51_epoch5.pt`), so the INIT lines equal v6's
+(test 3.8 / 5.3 / leak10 -17.2, tdmx 1.0 / -1.1). Inputs: moisesdb_guitar,
+moisesdb_stems and the checkpoint (moisesdb_guitar_single may stay attached;
+it isn't read). Same download bar: `tdmx` clearly above INIT, `test` holding.
+If v6a also fails, Demucs-input training doesn't close the gap with 14
+training songs, and the approach needs rethinking, not tuning.
+
 ## What to watch
 
 - **`sep`** -- both-active separation, mixture-thresholded SNR (capped
@@ -291,7 +343,7 @@ BATCH = 4 if USE_DP else 2   # v5.1: was 8/4 at 4s crops; 7.8s crops need ~2x me
 N_EPOCHS = 15
 LR_PEAK = 1e-4       # v3.1: fine-tuning from htd_v3_epoch5, not learning from scratch (fresh starts used 2e-4)
 GRAD_CLIP = 5.0
-CKPT_PREFIX = "htd_v51"
+CKPT_PREFIX = "htd_v6a"
 MIX_CONSISTENT = False    # v4a's rhythm = mix - lead wrapper. v4a was negative (CLAUDE.md 2026-10-19), so v5 uses v3.2's two outputs
 # v5: cross-song remix augmentation (one song's lead track over another's rhythm
 # track), the way Demucs itself is trained. Every run v3-v4a scored far better on
@@ -306,12 +358,23 @@ LAMBDA_SIL = 2.0     # v3.1: was 4.0. At x4 the lead output slid back to silence
 LAMBDA_LVL = 1.0     # v3.1: was 0.5; level-match term for playing sources (DC excluded), outside a +-3dB deadzone
 LVL_DEADZONE = 3.0
 DOUBLE_RHYTHM_FRAC = 0.10   # v3.1: was 0.25, which over-taught "two guitars -> all rhythm" (solos leaked into rhythm)
-INIT_CKPT = "htd_v5_epoch12.pt"   # v5.1: best on all 3 real songs (CLAUDE.md 2026-10-19); None = fresh
+INIT_CKPT = "htd_v51_epoch5.pt"   # v6: trained at 7.8s crops; ties v5 ep12 by ear (CLAUDE.md 2026-10-19). None = fresh
 EVAL_SEED = 1234   # v5.1: fixed evaluation crops, drawn once (see the split cell)
 EVAL_N = {"test": 40, "val": 40, "train": 24, "dbl": 16}
 LAMBDA_HINGE = 3.0   # Stage 2/3 found this is where routing actually gets a real gradient
 LAMBDA_LEAK = 1.0    # conservative starting weight, same philosophy as every prior leak-loss run
 LAMBDA_BAND = 0.0    # deliberately off this run -- see markdown above
+# v6: the real-song input. Real songs reach the model as a guitar stem that
+# htdemucs_6s extracted from a full mix; training only ever saw clean tracks, and
+# that costs 6-10dB on the same songs (input-mismatch test, CLAUDE.md 2026-10-19).
+DEMUCS_INPUT_FRAC = 0.5   # original-pair crops whose INPUT is the Demucs guitar of the full mix (targets stay the true tracks)
+# v6a: v6 (all three changes at once) was negative (CLAUDE.md 2026-10-27), so
+# one change at a time. Only the Demucs input on the pair crops stays on.
+DBL_DEMUCS_FRAC = 0.0     # v6a: was 0.5 in v6. Smeared two-rhythm inputs plausibly fed the lead-vs-two-rhythm seesaw
+BLEED_FRAC = 0.0          # v6a: was 0.5 in v6. Remix crops with other-instrument bleed added to the INPUT (targets stay clean)
+USE_SINGLE_GUITAR = False # v6a: was True in v6. The 82 single-guitar songs' windows in the remix pool
+BLEED_DB = __BLEED_DB__   # bleed level vs the guitar mix, dB, drawn uniformly (measured from Demucs's own residual, see markdown)
+EXCLUDE_TEST_ARTISTS = True   # keep the test songs' artists (Firefly, The Unfortunates) out of the NEW single-guitar remix pool
 
 print(f"device={DEVICE} n_gpus={torch.cuda.device_count()} batch={BATCH}")
 """
@@ -329,6 +392,20 @@ for root, dirs, files in os.walk("/kaggle/input"):
         break
 assert DATA_DIR, "Couldn't find the moisesdb_guitar dataset under /kaggle/input -- attach it via + Add Input."
 print("DATA_DIR:", DATA_DIR)
+
+# v6: two more datasets. moisesdb_guitar_single.zip (the 82 songs with ONE
+# distorted guitar: more lead/rhythm material for remixing) and
+# moisesdb_stems.zip (the 31 pair songs' non-guitar stems as category FLACs +
+# the htdemucs_6s guitar of each full mix).
+SINGLE_DIR, STEMS_DIR = None, None
+for root, dirs, files in os.walk("/kaggle/input"):
+    if "stems_manifest.json" in files:
+        STEMS_DIR = root
+    elif "manifest.json" in files and "role_labels.json" not in files:
+        SINGLE_DIR = root
+assert STEMS_DIR, "attach moisesdb_stems via + Add Input"
+assert SINGLE_DIR or not USE_SINGLE_GUITAR, "USE_SINGLE_GUITAR needs moisesdb_guitar_single attached"
+print("SINGLE_DIR:", SINGLE_DIR, "| STEMS_DIR:", STEMS_DIR)
 """
 
 MODEL_CODE = """\
@@ -590,16 +667,45 @@ def find_active_windows(path, win_sec=2.0):
     return rms, sr, len(mono)
 
 
+def read_crop(path, start, seg_n, gain=1.0):
+    x, _ = sf.read(path, dtype="float32", always_2d=True, start=start, frames=seg_n)
+    if x.shape[1] == 1:
+        x = np.repeat(x, 2, axis=1)
+    if x.shape[0] < seg_n:
+        x = np.pad(x, ((0, seg_n - x.shape[0]), (0, 0)))
+    return x / gain
+
+
+def normalise(inp, lead, rhythm):
+    \"\"\"One gain for input and targets (v2: silence stays silent), set from the
+    MODEL INPUT so the model always sees the same level (v6: the input can be
+    the Demucs guitar or carry bleed, so it is no longer lead + rhythm).
+    Returns (input, lead, rhythm), each (2, T).\"\"\"
+    g = MIX_RMS / max(float(np.sqrt(np.mean(inp ** 2))), 1e-8)
+    peak = np.abs(inp).max() * g
+    if peak > 0.95:
+        g *= 0.95 / peak
+    return (inp * g).T, (lead * g).T, (rhythm * g).T
+
+
 class MoisesLeadRhythmDataset:
     def __init__(self, data_dir, track_ids, labels_by_id, seg_sec=SEG_SEC,
-                 overlap_bias=0.7, active_thresh=0.01, double_rhythm=False, blocked=None):
+                 overlap_bias=0.7, active_thresh=0.01, double_rhythm=False, blocked=None,
+                 demucs_frac=0.0):
         # double_rhythm (v3): both tracks are rhythm parts. Target is lead =
         # silence, rhythm = both guitars -- the "two rhythm guitars, nobody
         # soloing" case that dominates The Sentinel's non-solo passages and was
         # absent from v1/v2 training.
+        # demucs_frac (v6): share of crops whose INPUT is the htdemucs_6s guitar
+        # of the song's full mix (STEMS_DIR). It contains every guitar in the
+        # song, so the extra tracks need targets (EXTRA_ROLES, from
+        # tools/extra_guitar_roles.py): accompaniment-like extras join the
+        # rhythm target; lead-like extras are never labelled -- Demucs-input
+        # crops avoid the windows where they play.
         self.seg_sec = seg_sec
         self.overlap_bias = overlap_bias
         self.double_rhythm = double_rhythm
+        self.demucs_frac = demucs_frac
         blocked = blocked or {}   # track_id -> 2s window indices never to sample (lead-rated)
         self.songs = []
         for tid in track_ids:
@@ -613,21 +719,36 @@ class MoisesLeadRhythmDataset:
             both = np.where((lead_rms[:n] > active_thresh) & (rhythm_rms[:n] > active_thresh))[0]
             bl = set(blocked.get(tid, []))
             both = np.array([i for i in both if not ({i - 1, i, i + 1} & bl)], dtype=int)
-            self.songs.append({
+            song = {
                 "blocked": bl,
                 "track_id": tid, "artist": r["artist"], "song": r["song"],
                 "lead_path": lead_path, "rhythm_path": rhythm_path,
                 "n_samples": min(n_lead, n_rhythm), "overlap_windows": both,
-                "overlap_frac": len(both) / max(1, n),
-            })
+                "overlap_frac": len(both) / max(1, n), "dmx": None,
+            }
+            if demucs_frac > 0 and tid in STEMS_MAN and "demucs_guitar" in STEMS_MAN[tid]:
+                extras, dmx_bl = [], set()
+                for gid, use in EXTRA_ROLES.get(tid, {}).items():
+                    path = os.path.join(data_dir, tid, "guitar", gid + ".wav")
+                    if use == "rhythm_extra":
+                        extras.append(path)
+                    elif use == "block":
+                        rms, _, _ = find_active_windows(path)
+                        dmx_bl |= {int(i) for i in np.where(rms > active_thresh)[0]}
+                song["dmx"] = {"path": os.path.join(STEMS_DIR, tid, "demucs_guitar.flac"),
+                               "gain": STEMS_MAN[tid]["demucs_guitar"]["gain"],
+                               "extras": extras, "blocked": bl | dmx_bl}
+            self.songs.append(song)
 
-    def _clear(self, song, start, seg_n):
-        if not song["blocked"]:
+    @staticmethod
+    def _clear(blocked, start, seg_n):
+        if not blocked:
             return True
         w0, w1 = start // (2 * SR), (start + seg_n - 1) // (2 * SR)
-        return not (set(range(w0, w1 + 1)) & song["blocked"])
+        return not (set(range(w0, w1 + 1)) & blocked)
 
-    def _sample_start(self, song):
+    def _sample_start(self, song, blocked):
+        \"\"\"Returns a start clear of `blocked`, or None after 50 tries.\"\"\"
         seg_n = int(self.seg_sec * SR)
         max_start = max(1, song["n_samples"] - seg_n)
         for _try in range(50):
@@ -636,43 +757,42 @@ class MoisesLeadRhythmDataset:
                 start = max(0, min(max_start, center - seg_n // 2))
             else:
                 start = random.randint(0, max_start)
-            if self._clear(song, start, seg_n):
-                break
-        return start
-
-    def _read_crop(self, song, start, seg_n):
-        out = []
-        for key in ("lead_path", "rhythm_path"):
-            x, _ = sf.read(song[key], dtype="float32", always_2d=True, start=start, frames=seg_n)
-            if x.shape[0] < seg_n:
-                x = np.pad(x, ((0, seg_n - x.shape[0]), (0, 0)))
-            out.append(x)
-        return out
+            if self._clear(blocked, start, seg_n):
+                return start
+        return None
 
     def sample_one(self):
         seg_n = int(self.seg_sec * SR)
         for _try in range(20):
             song = random.choice(self.songs)
-            lead, rhythm = self._read_crop(song, self._sample_start(song), seg_n)
-            mix_rms = np.sqrt(np.mean((lead + rhythm) ** 2))
-            if mix_rms >= SILENT_MIX_RMS:
+            dmx = song["dmx"] if (song["dmx"] and random.random() < self.demucs_frac) else None
+            start = self._sample_start(song, dmx["blocked"] if dmx else song["blocked"])
+            if start is None and dmx:   # no window clear of lead-like extras: clean input instead
+                dmx, start = None, self._sample_start(song, song["blocked"])
+            if start is None:
+                start = random.randint(0, max(1, song["n_samples"] - seg_n))
+            lead = read_crop(song["lead_path"], start, seg_n)
+            rhythm = read_crop(song["rhythm_path"], start, seg_n)
+            if np.sqrt(np.mean((lead + rhythm) ** 2)) >= SILENT_MIX_RMS:
                 break
+        if dmx:
+            for path in dmx["extras"]:
+                rhythm = rhythm + read_crop(path, start, seg_n)
+            inp = read_crop(dmx["path"], start, seg_n, dmx["gain"])
+        else:
+            inp = lead + rhythm
         if self.double_rhythm:
             lead, rhythm = np.zeros_like(lead), lead + rhythm
-        g = MIX_RMS / max(mix_rms, 1e-8)       # one gain for the pair
-        peak = np.abs(lead + rhythm).max() * g
-        if peak > 0.95:
-            g *= 0.95 / peak
-        return (lead * g).T, (rhythm * g).T
+        return normalise(inp, lead, rhythm)
 
     def sample_batch(self, batch_size):
         return _stack([self.sample_one() for _ in range(batch_size)])
 
 
 def _stack(items):
-    lead_t = torch.from_numpy(np.stack([a for a, _ in items])).float()
-    rhythm_t = torch.from_numpy(np.stack([b for _, b in items])).float()
-    return lead_t + rhythm_t, lead_t, rhythm_t
+    \"\"\"items: (input, lead, rhythm) triples. v6: the input is no longer always
+    lead + rhythm (Demucs-extracted guitar, or bleed added).\"\"\"
+    return tuple(torch.from_numpy(np.stack([it[k] for it in items])).float() for k in range(3))
 
 
 class MixedDataset:
@@ -742,8 +862,9 @@ class RemixDataset:
     the original song pairs and 10% in random remixes, so key-matched picks
     now skip candidates whose crop shares the lead's dominant note (>0.6 of
     the rhythm crop's pitch-class energy).\"\"\"
-    def __init__(self, lead_tracks, rhythm_tracks, active_thresh=0.01):
+    def __init__(self, lead_tracks, rhythm_tracks, active_thresh=0.01, bleed=None):
         # *_tracks: lists of (song_key, path, allowed_or_blocked_window_set, mode)
+        self.bleed = bleed   # v6: BleedSource or None
         self.leads, self.rhys = [], []
         for dst, tracks in ((self.leads, lead_tracks), (self.rhys, rhythm_tracks)):
             for key, path, wins, mode in tracks:
@@ -792,11 +913,41 @@ class RemixDataset:
         rhythm = self._read(rp, ri)
         rl, rr = np.sqrt(np.mean(lead ** 2)), np.sqrt(np.mean(rhythm ** 2))
         lead = lead * (rr / max(rl, 1e-8)) * 10 ** (random.uniform(-REMIX_GAIN_DB, REMIX_GAIN_DB) / 20)
-        g = MIX_RMS / max(np.sqrt(np.mean((lead + rhythm) ** 2)), 1e-8)   # one gain for the pair, as elsewhere
-        peak = np.abs(lead + rhythm).max() * g
-        if peak > 0.95:
-            g *= 0.95 / peak
-        return (lead * g).T, (rhythm * g).T
+        inp = lead + rhythm
+        if self.bleed is not None and random.random() < BLEED_FRAC:
+            inp = inp + self.bleed.sample(inp)
+        return normalise(inp, lead, rhythm)
+
+
+class BleedSource:
+    \"\"\"v6: other-instrument bleed for remix inputs (targets stay clean).
+    Real non-guitar stems (drums / bass / vocals / other = keys, strings, ...)
+    of the TRAINING pair songs, summed per category in STEMS_DIR. Each crop:
+    a random song and position, each category in with its own probability
+    (weighted toward what Demucs actually leaks into its guitar stem: keys and
+    vocals more than bass), random +-6dB per category, then scaled to BLEED_DB
+    below the guitar mix. BLEED_DB comes from the measured residual of
+    htdemucs_6s's guitar stem vs the true guitar sum on the training songs.\"\"\"
+    P_CAT = {"other": 0.7, "vocals": 0.5, "drums": 0.4, "bass": 0.2}
+
+    def __init__(self, track_ids):
+        self.songs = [(t, STEMS_MAN[t]) for t in track_ids if t in STEMS_MAN]
+        print(f"bleed: {len(self.songs)} songs' non-guitar stems")
+
+    def sample(self, guitar):
+        seg_n = guitar.shape[0]
+        for _try in range(20):
+            tid, e = random.choice(self.songs)
+            cats = [c for c in e["cats"] if random.random() < self.P_CAT.get(c, 0.5)] or [random.choice(list(e["cats"]))]
+            n = min(e["cats"][c]["frames"] for c in cats)
+            start = random.randint(0, max(1, n - seg_n))
+            b = sum(read_crop(os.path.join(STEMS_DIR, tid, f"{c}.flac"), start, seg_n, e["cats"][c]["gain"])
+                    * 10 ** (random.uniform(-6, 6) / 20) for c in cats)
+            br = float(np.sqrt(np.mean(b ** 2)))
+            if br > 1e-4:
+                break
+        target_db = random.uniform(*BLEED_DB)
+        return b * (np.sqrt(np.mean(guitar ** 2)) / max(br, 1e-8)) * 10 ** (target_db / 20)
 """
 
 SPLIT_CODE = """\
@@ -806,6 +957,15 @@ SPLIT_CODE = """\
 with open(os.path.join(DATA_DIR, "role_labels.json")) as f:
     labels = json.load(f)
 usable = {r["track_id"]: r for r in labels if r["usable"]}
+# v6: Demucs-extracted inputs + non-guitar stems (tools/pull_moisesdb_stems.py,
+# tools/demucs_guitar_inputs.py), and what to do with each song's EXTRA guitar
+# tracks in a Demucs input (tools/extra_guitar_roles.py, embedded):
+# "rhythm_extra" joins the rhythm target, "block" = windows where it plays are skipped.
+with open(os.path.join(STEMS_DIR, "stems_manifest.json")) as f:
+    STEMS_MAN = json.load(f)
+EXTRA_ROLES = __EXTRA_ROLES__
+print(f"stems for {len(STEMS_MAN)} songs, Demucs guitar for "
+      f"{sum('demucs_guitar' in e for e in STEMS_MAN.values())}")
 
 tmp_ds = MoisesLeadRhythmDataset(DATA_DIR, list(usable.keys()), usable, overlap_bias=0.0)
 by_overlap = sorted(tmp_ds.songs, key=lambda s: s["overlap_frac"], reverse=True)
@@ -823,6 +983,9 @@ print(f"\\ntrain={len(train_ids)} val={len(val_ids)} test={len(test_ids)}")
 
 val_ds = MoisesLeadRhythmDataset(DATA_DIR, val_ids, usable)
 test_ds = MoisesLeadRhythmDataset(DATA_DIR, test_ids, usable)
+# v6: the same test songs with the REAL-SONG input (htdemucs_6s guitar of the full
+# mix, extras in the rhythm target). This is the line v6 is meant to move.
+test_dmx_ds = MoisesLeadRhythmDataset(DATA_DIR, test_ids, usable, demucs_frac=1.0)
 
 # v3: two-rhythm-guitar songs -- the ones v1/v2 excluded as "no clear lead/rhythm
 # split", with BOTH tracks rated rhythm-like by the role classifier (mean
@@ -842,8 +1005,10 @@ dbl_train_ids = [t for t, r in dbl.items() if r["song"] not in DBL_EVAL_SONGS]
 print(f"two-rhythm songs: train={len(dbl_train_ids)} eval={len(dbl_eval_ids)}")
 assert len(dbl_eval_ids) == 2
 
-train_main = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable)
-train_dbl = MoisesLeadRhythmDataset(DATA_DIR, dbl_train_ids, dbl, double_rhythm=True, blocked=DBL_BLOCKED)
+train_main = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable, demucs_frac=DEMUCS_INPUT_FRAC)
+train_dbl = MoisesLeadRhythmDataset(DATA_DIR, dbl_train_ids, dbl, double_rhythm=True, blocked=DBL_BLOCKED,
+                                    demucs_frac=DBL_DEMUCS_FRAC)
+train_clean = MoisesLeadRhythmDataset(DATA_DIR, train_ids, usable)   # clean inputs, for the `train` eval line (as v5)
 # v5: cross-song remixes from TRAINING songs only (val/test and the two-rhythm
 # eval songs never contribute). Window lists computed locally by
 # tools/remix_windows.py and embedded here.
@@ -856,7 +1021,26 @@ for t in dbl_train_ids:
     for k in ("lead_id", "rhythm_id"):
         _rhy_tracks.append((dbl[t]["song"], os.path.join(DATA_DIR, t, "guitar", dbl[t][k] + ".wav"),
                             set(DBL_BLOCKED.get(t, [])), "block"))
-train_remix = RemixDataset(_lead_tracks, _rhy_tracks)
+# v6: the 82 MoisesDB songs with ONE distorted guitar (SINGLE_DIR): confident lead
+# windows (P(lead) > 0.8) and rhythm windows (< 0.2), tools/single_guitar_windows.py,
+# embedded. All are training material. EXCLUDE_TEST_ARTISTS keeps the test songs'
+# artists out (Firefly 74 + The Unfortunates 44 of the 181 new lead crops), so the
+# test line still measures unseen artists rather than memorised rigs.
+SINGLE_WINDOWS = __SINGLE_WINDOWS__
+_test_artists = {usable[t]["artist"] for t in test_ids}
+_n_single = 0
+for t, v in (SINGLE_WINDOWS.items() if USE_SINGLE_GUITAR else []):
+    if EXCLUDE_TEST_ARTISTS and v["artist"] in _test_artists:
+        continue
+    path = os.path.join(SINGLE_DIR, t, "guitar", v["file"] + ".wav")
+    _lead_tracks.append(("single:" + t, path, set(v["lead_ok"]), "allow"))
+    _rhy_tracks.append(("single:" + t, path, set(v["rhythm_ok"]), "allow"))
+    _n_single += 1
+print(f"single-guitar songs in the remix pool: {_n_single} (test artists excluded: {EXCLUDE_TEST_ARTISTS})")
+train_remix = RemixDataset(_lead_tracks, _rhy_tracks,
+                           bleed=BleedSource(train_ids + dbl_train_ids) if BLEED_FRAC > 0 else None)
+print(f"Demucs input: pairs {DEMUCS_INPUT_FRAC:.0%}, two-rhythm {DBL_DEMUCS_FRAC:.0%} | bleed {BLEED_FRAC:.0%} "
+      f"| single-guitar pool {USE_SINGLE_GUITAR}")
 train_ds = MixedDataset(train_main, [(train_remix, REMIX_FRAC), (train_dbl, DOUBLE_RHYTHM_FRAC)])
 print(f"training crops: {REMIX_FRAC:.0%} remix, {DOUBLE_RHYTHM_FRAC:.0%} two-rhythm, "
       f"{1 - REMIX_FRAC - DOUBLE_RHYTHM_FRAC:.0%} original song pairs")
@@ -866,8 +1050,9 @@ dbl_eval_ds = MoisesLeadRhythmDataset(DATA_DIR, dbl_eval_ids, dbl, double_rhythm
 # v5.1: fixed evaluation crops (same every epoch, so epochs are comparable)
 test_fix = FixedCrops(test_ds, EVAL_N["test"], EVAL_SEED)
 val_fix = FixedCrops(val_ds, EVAL_N["val"], EVAL_SEED + 1)
-train_fix = FixedCrops(train_main, EVAL_N["train"], EVAL_SEED + 2)
+train_fix = FixedCrops(train_clean, EVAL_N["train"], EVAL_SEED + 2)
 dbl_fix = FixedCrops(dbl_eval_ds, EVAL_N["dbl"], EVAL_SEED + 3)
+test_dmx_fix = FixedCrops(test_dmx_ds, EVAL_N["test"], EVAL_SEED + 4)   # v6
 print(f"fixed eval crops: test {EVAL_N['test']} ({', '.join(usable[t]['song'] for t in test_ids)}), "
       f"val {EVAL_N['val']} ({', '.join(usable[t]['song'] for t in val_ids)}), "
       f"train {EVAL_N['train']}, two-rhythm {EVAL_N['dbl']}")
@@ -1011,6 +1196,7 @@ def lr_at(step):
 
 os.makedirs("/kaggle/working", exist_ok=True)
 print("INIT  test", fmt(evaluate(test_fix)))
+print("INIT  tdmx", fmt(evaluate(test_dmx_fix)))   # v6: test songs, real-song (Demucs) input
 print("INIT  " + evaluate_dbl())
 print("(sep is the new mixture-thresholded SNR on both-active crops -- NOT comparable to v1's "
       "SI-SDR best_perm. buzz: lower is better, -30dB is the floor the loss asks for.)")
@@ -1045,6 +1231,7 @@ for epoch in range(N_EPOCHS):
     print(f"epoch {epoch+1:2d} lr={lr_at(global_step):.1e}")
     print("   val ", fmt(evaluate(val_fix)))
     print("   test", fmt(evaluate(test_fix)))
+    print("   tdmx", fmt(evaluate(test_dmx_fix)))
     print("   " + evaluate_dbl())
     # v5: the same metrics on TRAINING songs (original pairs, not remixes). The
     # remix bet is that this train-vs-test gap narrows.
@@ -1063,12 +1250,11 @@ NEXT_MD = """\
    and listen. Select by the real song, never by these in-domain numbers
    (five measured instances in this project of the in-domain metric
    picking the wrong checkpoint).
-3. The real question for this run (v4a): does the **rhythm output stop
-   carrying the solos** (on The Sentinel, Hot Blooded and Your Light,
-   scored with `tools/timeline_outputs.py --solo ...`), without the lead
-   output going quiet? Compare against v3 epoch 5 / v3.1 epoch 3 outputs in
-   `output/stage4_local_test/`. Locally, `tools/diagnose_htd_ckpt.py`
-   gives per-output numbers on any downloaded checkpoint.
+3. The real question for this run (v6a): does training on the Demucs input
+   make the **real songs** cleaner (The Sentinel, Hot Blooded, Your Light at
+   7.8s chunks, `tools/realsong_test_stereo.py` + `tools/timeline_outputs.py
+   --solo ...`) than v5 epoch 12? `tools/input_mismatch_test.py` re-measures
+   the clean-vs-Demucs input gap on the test songs.
 
 ## History
 
@@ -1086,12 +1272,23 @@ def build_cells():
     with open(os.path.join(os.path.dirname(__file__), "remix_windows.json")) as f:
         remix_windows = json.load(f)
     remix_windows = {k: remix_windows[k] for k in ("lead_ok", "rhythm_bad")}
+    with open(os.path.join(os.path.dirname(__file__), "extra_guitar_roles.json")) as f:
+        extra_roles = {t: {g: v["use"] for g, v in tr.items() if v["use"] in ("rhythm_extra", "block")}
+                       for t, tr in json.load(f).items()}
+    with open(os.path.join(os.path.dirname(__file__), "single_guitar_windows.json")) as f:
+        single = {t: {k: v[k] for k in ("artist", "file", "lead_ok", "rhythm_ok")}
+                  for t, v in json.load(f).items()}
+    with open(os.path.join(os.path.dirname(__file__), "v6_bleed_db.json")) as f:
+        bleed_db = json.load(f)["bleed_db"]
     split_code = (SPLIT_CODE.replace("__DBL_BLOCKED__", json.dumps(blocked))
-                  .replace("__REMIX_WINDOWS__", json.dumps(remix_windows)))
+                  .replace("__REMIX_WINDOWS__", json.dumps(remix_windows))
+                  .replace("__EXTRA_ROLES__", json.dumps(extra_roles))
+                  .replace("__SINGLE_WINDOWS__", json.dumps(single)))
+    config_code = CONFIG_CODE.replace("__BLEED_DB__", repr(tuple(bleed_db)))
     return [
         cell(MD, INTRO_MD),
         cell(CODE, SETUP_CODE),
-        cell(CODE, CONFIG_CODE),
+        cell(CODE, config_code),
         cell(CODE, DATA_LOCATE_CODE),
         cell(CODE, MODEL_CODE),
         cell(CODE, LOSS_CODE),
@@ -1130,23 +1327,30 @@ def main():
     # Colab twin: same cells, swap the data-location cell for an upload widget.
     colab_cells = list(kaggle_cells)
     colab_data_cell = cell(CODE, """\
-# Colab: upload a zip of output/moisesdb_guitar/ (6.07GB -- this will be slow
-# over the upload widget; mounting Google Drive is the faster alternative if
-# you've already put the folder there) and extract it.
-from google.colab import files
+# Colab: v6 needs three datasets (~16GB), too big for the upload widget. Put
+# moisesdb_guitar.zip, moisesdb_guitar_single.zip and moisesdb_stems.zip (and the
+# INIT_CKPT .pt) in Google Drive under MyDrive/stem_splitter/, then run this.
+from google.colab import drive
+import shutil
 import zipfile
 
-print("Upload moisesdb_guitar.zip (zip of the output/moisesdb_guitar/ folder)")
-uploaded = files.upload()
-zip_name = list(uploaded.keys())[0]
-with zipfile.ZipFile(zip_name) as zf:
-    zf.extractall("/content/moisesdb_guitar")
-DATA_DIR = "/content/moisesdb_guitar"
-for root, dirs, fs in os.walk(DATA_DIR):
-    if "manifest.json" in fs:
+drive.mount("/content/drive")
+SRC = "/content/drive/MyDrive/stem_splitter"
+for z in ("moisesdb_guitar.zip", "moisesdb_guitar_single.zip", "moisesdb_stems.zip"):
+    with zipfile.ZipFile(os.path.join(SRC, z)) as zf:
+        zf.extractall("/content/data/" + z[:-4])
+for f in os.listdir(SRC):
+    if f.endswith(".pt"):
+        shutil.copy(os.path.join(SRC, f), "/content/")
+DATA_DIR = SINGLE_DIR = STEMS_DIR = None
+for root, dirs, fs in os.walk("/content/data"):
+    if "stems_manifest.json" in fs:
+        STEMS_DIR = root
+    elif "manifest.json" in fs and "role_labels.json" in fs:
         DATA_DIR = root
-        break
-print("DATA_DIR:", DATA_DIR)
+    elif "manifest.json" in fs:
+        SINGLE_DIR = root
+print("DATA_DIR:", DATA_DIR, "| SINGLE_DIR:", SINGLE_DIR, "| STEMS_DIR:", STEMS_DIR)
 """)
     data_idx = next(i for i, c in enumerate(colab_cells)
                      if c["cell_type"] == CODE and "/kaggle/input" in "".join(c["source"]))
